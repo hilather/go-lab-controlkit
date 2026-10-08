@@ -429,6 +429,75 @@ func copyKeys(in map[string]bool) map[string]bool {
 	return out
 }
 
+func TestDeniedShareSmallMax(t *testing.T) {
+	r, err := NewRing[row](RingOptions[row]{
+		Max: 1, SetID: setID, IsDenied: isDenied, DeniedShare: 0.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	okRow := r.Append(row{Result: "ok", Name: "apply"})
+	dropped := r.Append(row{Result: "denied", Name: "d"})
+	if r.Len() != 1 || dropped.ID != "" {
+		t.Fatalf("len %d dropped %+v", r.Len(), dropped)
+	}
+	if found, ok := r.Get(okRow.ID); !ok || found.Name != "apply" {
+		t.Fatal("ok row evicted", found, ok)
+	}
+	r.Wipe()
+	first := r.Append(row{Result: "denied", Name: "d1"})
+	second := r.Append(row{Result: "denied", Name: "d2"})
+	if r.Len() != 1 || second.ID == "" {
+		t.Fatalf("recycle len %d id %q", r.Len(), second.ID)
+	}
+	if _, ok := r.Get(first.ID); ok {
+		t.Fatal("old denial kept")
+	}
+	if found, ok := r.Get(second.ID); !ok || found.Name != "d2" {
+		t.Fatal(found, ok)
+	}
+
+	two, err := NewRing[row](RingOptions[row]{
+		Max: 2, SetID: setID, IsDenied: isDenied, DeniedShare: 0.25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := two.Append(row{Result: "ok", Name: "a"})
+	b := two.Append(row{Result: "ok", Name: "b"})
+	if miss := two.Append(row{Result: "denied", Name: "d"}); miss.ID != "" || two.Len() != 2 {
+		t.Fatalf("fractional share stored a denial by evicting ok: %+v len %d", miss, two.Len())
+	}
+	if _, ok := two.Get(a.ID); !ok {
+		t.Fatal("a evicted")
+	}
+	if _, ok := two.Get(b.ID); !ok {
+		t.Fatal("b evicted")
+	}
+
+	// Before the quota is a whole number of rows, a denial still evicts the oldest OK row.
+	wide, err := NewRing[row](RingOptions[row]{
+		Max: 4, SetID: setID, IsDenied: isDenied, DeniedShare: 0.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldest := wide.Append(row{Result: "ok", Name: "oldest"})
+	wide.Append(row{Result: "ok", Name: "b"})
+	wide.Append(row{Result: "ok", Name: "c"})
+	wide.Append(row{Result: "ok", Name: "d"})
+	admitted := wide.Append(row{Result: "denied", Name: "d1"})
+	if wide.Len() != 4 || admitted.ID == "" {
+		t.Fatalf("len %d admitted %+v", wide.Len(), admitted)
+	}
+	if _, ok := wide.Get(oldest.ID); ok {
+		t.Fatal("pre-quota denial did not evict the oldest ok row")
+	}
+	if _, ok := wide.Get(admitted.ID); !ok {
+		t.Fatal("denial was not stored")
+	}
+}
+
 func TestDeniedFloodGuard(t *testing.T) {
 	r, err := NewRing[row](RingOptions[row]{
 		Max:         4,

@@ -22,6 +22,12 @@ import (
 // Max and SetID are required.
 // IsDenied, when nil, treats every row as not denied.
 // DeniedShare of 0 disables the flood guard. It must be in [0, 1].
+// A positive share reserves denied rows. The reservation is
+// max(1, int(share*Max)) when Max >= 1, so a fraction of a slot still
+// counts as one row. Once that many denied rows are stored, a further
+// denied append evicts the oldest denied row and does not evict an OK row.
+// When int(share*Max) is 0 and the ring holds no denied row, a denied
+// append is not stored, so it cannot evict an OK row to make room.
 //
 // DefaultList is the page size List uses when limit <= 0.
 // Zero means limit <= 0 returns every stored row (syslog's uncapped List).
@@ -110,14 +116,16 @@ func NewRing[E any](o RingOptions[E]) (*Ring[E], error) {
 // An empty or colliding id is replaced with a counter id and passed to SetID.
 // When the ring is full, a denied row evicts the oldest denied row once denied
 // rows have reached DeniedShare of the capacity. Otherwise the oldest row goes.
+// A denied append that would evict an OK row while DeniedShare*Max truncates
+// to 0 and the ring holds no denied row is returned unchanged and not stored.
 func (r *Ring[E]) Append(e E) E {
 	if r == nil {
 		return e
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.rows) >= r.max {
-		r.evictLocked(e)
+	if len(r.rows) >= r.max && !r.makeRoomLocked(e) {
+		return e
 	}
 	r.seq++
 	id := ""
@@ -155,17 +163,31 @@ func (r *Ring[E]) idTaken(id string) bool {
 	return ok
 }
 
-func (r *Ring[E]) evictLocked(incoming E) {
-	drop := 0
+// makeRoomLocked evicts one row so incoming can be stored.
+// It reports false when incoming is denied, the ring has no denied row to
+// recycle, and int(share*max) is 0. Evicting would remove an OK row.
+func (r *Ring[E]) makeRoomLocked(incoming E) bool {
 	if r.share > 0 && r.isDenied(incoming) {
-		limit := int(r.share * float64(r.max))
+		raw := int(r.share * float64(r.max))
+		limit := raw
+		if limit < 1 {
+			limit = 1
+		}
 		if r.deniedCount() >= limit {
 			if i := r.oldestDenied(); i >= 0 {
-				drop = i
+				r.removeAt(i)
+				return true
 			}
+			// The quota counts as filled but no denied row exists.
+			// Do not evict an OK row in its place.
+			return false
+		}
+		if raw < 1 && r.oldestDenied() < 0 {
+			return false
 		}
 	}
-	r.removeAt(drop)
+	r.removeAt(0)
+	return true
 }
 
 func (r *Ring[E]) isDenied(e E) bool {
