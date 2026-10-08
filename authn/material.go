@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -32,6 +33,8 @@ type DNSDefaults struct {
 // PathPrefix empty means violation fields are not prefixed.
 // RejectEmptyRole false allows an empty role to fall through to EmptyRole
 // or DNSDefaults.
+// RejectBlankTokens false rejects only a zero-length secret. True also
+// rejects a secret whose bytes are all whitespace.
 // LocalhostIsLoopback false classifies loopback with netip only.
 // ManagementBound false means management is not bound. Both values are
 // meaningful and both are part of SpecHash.
@@ -42,15 +45,21 @@ type Config struct {
 	// ModeText is the spec mode string quoted by the unknown-mode load error
 	// (`must be bearer, got %q`). Empty quotes Mode.String(). It is not part
 	// of SpecHash: a successful load has already parsed Mode.
-	ModeText            string
-	Source              TokenSource
-	Duplicates          DupPolicy
-	MinSecretBytes      int
-	WarnBelowBytes      int
-	Accept              func(*Material) error
-	PathPrefix          string
-	Roles               scope.Table
-	RejectEmptyRole     bool
+	ModeText        string
+	Source          TokenSource
+	Duplicates      DupPolicy
+	MinSecretBytes  int
+	WarnBelowBytes  int
+	Accept          func(*Material) error
+	PathPrefix      string
+	Roles           scope.Table
+	RejectEmptyRole bool
+	// RejectBlankTokens false rejects only a zero-length secret (ntp, netconf,
+	// snmp, maildev, syslog). True also rejects a secret whose bytes are all
+	// whitespace, with dns's load error: message "empty token", field "tokens",
+	// code "required". dns sets it. The check runs after the id check and after
+	// MinSecretBytes, and before the zero-length "token value is required" check.
+	RejectBlankTokens   bool
 	LocalhostIsLoopback bool
 	ManagementBound     bool
 	Basic               *BasicSpec
@@ -283,6 +292,17 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 				Kind: kerr.Invalid, Code: "invalid_value", TokenIndex: i, TokenID: id, File: ref,
 				Field: tokenField(cfg.PathPrefix, i, "secretFile"),
 				Msg:   fmt.Sprintf("secretFile %q trimmed contents are shorter than %d bytes", ref, cfg.MinSecretBytes),
+			}
+		}
+		// dns rejects a token whose trimmed text is empty. The other repos
+		// reject only a zero-length secret, below. File line modes never hand
+		// compile a whitespace-only secret: FirstNonCommentLine has no usable
+		// line, and WholeFileTrim has already trimmed.
+		if cfg.RejectBlankTokens && len(bytes.TrimSpace(raw)) == 0 {
+			tok.Secret.Zero()
+			return nil, &LoadError{
+				Kind: kerr.Invalid, Code: "required", TokenIndex: i, TokenID: id, File: tok.Ref,
+				Field: "tokens", Msg: "empty token",
 			}
 		}
 		if len(raw) == 0 {
@@ -594,6 +614,7 @@ func specHash(cfg Config) [32]byte {
 		Warn        int    `json:"warnBelowBytes"`
 		Prefix      string `json:"pathPrefix"`
 		RejectEmpty bool   `json:"rejectEmptyRole"`
+		RejectBlank bool   `json:"rejectBlankTokens"`
 		Localhost   bool   `json:"localhostIsLoopback"`
 		Bound       bool   `json:"managementBound"`
 		Accept      bool   `json:"accept"`
@@ -606,8 +627,9 @@ func specHash(cfg Config) [32]byte {
 	}{
 		Mode: cfg.Mode.String(), Duplicates: cfg.Duplicates.String(),
 		Min: cfg.MinSecretBytes, Warn: cfg.WarnBelowBytes, Prefix: cfg.PathPrefix,
-		RejectEmpty: cfg.RejectEmptyRole, Localhost: cfg.LocalhostIsLoopback,
-		Bound: cfg.ManagementBound, Accept: cfg.Accept != nil,
+		RejectEmpty: cfg.RejectEmptyRole, RejectBlank: cfg.RejectBlankTokens,
+		Localhost: cfg.LocalhostIsLoopback,
+		Bound:     cfg.ManagementBound, Accept: cfg.Accept != nil,
 		Roles: cfg.Roles, Source: cfg.Source.Spec(),
 	}
 	if cfg.Basic != nil {

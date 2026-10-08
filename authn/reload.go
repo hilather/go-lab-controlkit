@@ -60,9 +60,10 @@ func Prepare(cfg Config) (*Staged, error) {
 }
 
 // SpecHash is the SHA-256 of the canonical config: mode, duplicate policy,
-// floors, path prefix, role table, basic username and file ref, resolve
-// options, the management-bound bit, and the source description. Secret bytes
-// are not part of the hash. Accept is recorded only as present or absent.
+// floors, path prefix, role table, the blank-token flag, basic username and
+// file ref, resolve options, the management-bound bit, and the source
+// description. Secret bytes are not part of the hash. Accept is recorded
+// only as present or absent.
 func (s *Staged) SpecHash() [32]byte {
 	if s == nil {
 		return [32]byte{}
