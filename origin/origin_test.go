@@ -212,6 +212,10 @@ func TestOriginParsersMatchGolden(t *testing.T) {
 		"http://[::ffff:127.0.0.1]",
 		"file://localhost/tmp",
 		"http://127.0.0.1?x=1",
+		"http:// 127.0.0.1",
+		"http://[ ::1]",
+		"http://[ localhost]",
+		"http://[127.0.0.1 ]",
 	}
 	allows := [][]string{
 		nil,

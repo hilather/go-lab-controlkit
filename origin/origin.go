@@ -37,7 +37,7 @@ const (
 	// DNSParse is dns parseHTTPOrigin. Userinfo stays in the host, a
 	// fragment is not a delimiter, a colon splits the host even when the
 	// port is not numeric, and brackets are trimmed the way dns
-	// isLoopbackHost trims them.
+	// isLoopbackHost trims them. Spaces in the host are not trimmed.
 	DNSParse
 )
 
@@ -81,6 +81,10 @@ func Check(origin string, allow []string, p Policy) error {
 	host, ok := httpHost(origin, p.HostParse)
 	if !ok {
 		return denied()
+	}
+	// The five trim the host url.Parse returns. dns isLoopbackHost does not.
+	if p.HostParse != DNSParse {
+		host = strings.TrimSpace(host)
 	}
 	if loopbackAllowed(p, allow) && isLoopback(host, p.LocalhostFold) {
 		return nil
@@ -175,7 +179,6 @@ func splitDNSHostPort(hostport string) (string, bool) {
 }
 
 func isLoopback(host string, fold bool) bool {
-	host = strings.TrimSpace(host)
 	if fold {
 		if strings.EqualFold(host, "localhost") {
 			return true
