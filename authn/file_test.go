@@ -103,10 +103,24 @@ func readDirErr(t *testing.T, path string) error {
 }
 
 func TestReaderOpenErrorsMatchReadFile(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "no-such")
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "no-such")
 	for _, harden := range []bool{false, true} {
 		sameRead(t, missing, passOpts(harden))
 	}
+	if os.Geteuid() == 0 {
+		t.Log("skipping mode 000 comparison as root")
+		return
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.WriteFile(locked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+	sameRead(t, locked, passOpts(true))
 }
 
 func TestReaderRefusesFIFOWithoutBlocking(t *testing.T) {

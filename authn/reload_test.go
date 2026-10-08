@@ -183,12 +183,25 @@ func TestCommitFiresIdentityHooksOnce(t *testing.T) {
 func TestPrepareRunsWithoutAppLock(t *testing.T) {
 	var mu sync.Mutex
 	src := &lockSource{mu: &mu, toks: []RawToken{raw("a", "administrator", "secret")}}
-	st, err := Prepare(Config{Mode: ModeBearer, Source: src, Duplicates: RejectDuplicateValue})
-	if err != nil || st.Err() != nil {
-		t.Fatalf("%v %v", err, st.Err())
+	mu.Lock()
+	defer mu.Unlock()
+	done := make(chan struct{})
+	var st *Staged
+	var err error
+	go func() {
+		defer close(done)
+		st, err = Prepare(Config{Mode: ModeBearer, Source: src, Duplicates: RejectDuplicateValue})
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Prepare blocked while the caller held the lock")
 	}
-	if src.sawHeld {
-		t.Fatal("Prepare required the caller lock")
+	if err != nil || st == nil || st.Err() != nil {
+		t.Fatalf("prepare %v stage %v", err, st)
+	}
+	if !src.sawHeld {
+		t.Fatal("source ran without observing the caller-held lock")
 	}
 }
 
