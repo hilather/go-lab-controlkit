@@ -173,8 +173,7 @@ func (s *Store) SetNow(now func() time.Time) {
 }
 
 // Create sweeps expired rows, applies the cap policy, and inserts a session.
-// A sweep that removes any row fires OnDelete once. An eviction fires it
-// once more. Both can run for the same Create.
+// A call that removes any row, by sweep, eviction, or both, fires OnDelete once.
 func (s *Store) Create(p scope.Principal) (Issued, error) {
 	if s == nil {
 		return Issued{}, kerr.New(kerr.Invalid, "session: store is required")
@@ -214,10 +213,7 @@ func (s *Store) Create(p scope.Principal) (Issued, error) {
 	s.sessions[cookie] = rec
 	issued := Issued{Session: rec.view(), Cookie: cookie, CSRF: csrf}
 	s.mu.Unlock()
-	if swept {
-		s.notify()
-	}
-	if evicted {
+	if swept || evicted {
 		s.notify()
 	}
 	return issued, nil

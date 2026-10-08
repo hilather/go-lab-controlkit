@@ -520,6 +520,53 @@ func TestOnDeleteOncePerRemoval(t *testing.T) {
 	}
 }
 
+func TestOnDeleteSweepAndEvictOnce(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Max = 2
+	s := mustStore(t, cfg)
+	now := clock(t, s)
+	n := 0
+	s.OnDelete(func() { n++ })
+	oldest, err := s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Minute)
+	newer, err := s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.sessions["expired"] = &record{
+		public:   Session{ID: "old", CreatedAt: now.Add(-2 * time.Hour), LastSeen: now.Add(-2 * time.Hour)},
+		created:  now.Add(-2 * time.Hour),
+		lastSeen: now.Add(-2 * time.Hour),
+	}
+	s.mu.Unlock()
+	fresh, err := s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("sweep+evict hooks %d", n)
+	}
+	if s.Len() != 2 {
+		t.Fatalf("len %d", s.Len())
+	}
+	if _, ok := s.Lookup("expired"); ok {
+		t.Fatal("expired row remained")
+	}
+	if _, ok := s.Lookup(oldest.Cookie); ok {
+		t.Fatal("oldest live row was kept")
+	}
+	if _, ok := s.Lookup(newer.Cookie); !ok {
+		t.Fatal("newer live row was evicted")
+	}
+	if _, ok := s.Lookup(fresh.Cookie); !ok {
+		t.Fatal("new row missing")
+	}
+}
+
 func TestOnDeleteAfterUnlock(t *testing.T) {
 	s := mustStore(t, baseCfg())
 	iss, err := s.Create(princ())
