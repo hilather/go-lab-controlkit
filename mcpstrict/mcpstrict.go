@@ -57,8 +57,11 @@ type Spec struct {
 // side effects, and for the sub-slice those validators receive. While
 // parsing, Check tracks which patterns can still match the current
 // prefix. When none can, the subtree is scanned for syntax and duplicate
-// keys without path strings or copies. A typed spec decodes the input
-// once with encoding/json; that decode is not repeated per node.
+// keys. Values are never copied. One reused path buffer is updated for
+// error locations and is not retained per node. A path string is
+// materialized only for a kept Open failure or an error. A typed spec
+// decodes the input once with encoding/json; that decode is not repeated
+// per node.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil

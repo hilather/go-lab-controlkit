@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -359,6 +360,58 @@ func TestCheckOpenWideMask(t *testing.T) {
 	if err == nil || err.Error() != "mcpstrict: invalid value at /z/b" || !errors.Is(err, zErr) || errors.Is(err, stale) {
 		t.Fatal(err)
 	}
+}
+
+func TestCheckDocReusedPathBuffer(t *testing.T) {
+	doc := strings.Join(strings.Fields(funcDoc(t, "mcpstrict.go", "Check")), " ")
+	for _, phrase := range []string{
+		"Values are never copied",
+		"One reused path buffer is updated for error locations and is not retained per node",
+		"A path string is materialized only for a kept Open failure or an error",
+	} {
+		if !strings.Contains(doc, phrase) {
+			t.Fatalf("Check doc missing %q:\n%s", phrase, doc)
+		}
+	}
+	if strings.Contains(doc, "without path strings") {
+		t.Fatalf("Check doc still says an unreachable subtree has no path strings:\n%s", doc)
+	}
+}
+
+func funcDoc(t *testing.T, filename, name string) string {
+	t.Helper()
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	i := strings.Index(text, "func "+name+"(")
+	if i < 0 {
+		t.Fatalf("func %s not found", name)
+	}
+	lines := strings.Split(text[:i], "\n")
+	var rev []string
+	for n := len(lines) - 1; n >= 0; n-- {
+		line := strings.TrimSpace(lines[n])
+		if line == "" {
+			if len(rev) > 0 {
+				break
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		rev = append(rev, strings.TrimSpace(strings.TrimPrefix(line, "//")))
+	}
+	if len(rev) == 0 {
+		t.Fatalf("func %s has no doc comment", name)
+	}
+	parts := make([]string, len(rev))
+	for n := range rev {
+		parts[n] = rev[len(rev)-1-n]
+	}
+	return strings.Join(parts, "\n")
 }
 
 func checkLastPattern(t *testing.T, dummies int) error {
