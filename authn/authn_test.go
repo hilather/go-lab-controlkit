@@ -228,7 +228,7 @@ func TestAcceptNetconfRefusesDevLoopback(t *testing.T) {
 		Mode: ModeDevLoopbackUnauth, Source: Memory(nil), Duplicates: RejectDuplicateValue,
 		Accept: BearerNeedsToken(false),
 	})
-	if err == nil || err.Error() != "management bind refused: dev-loopback-unauth" {
+	if err == nil || err.Error() != `management bind refused: unknown auth mode "dev-loopback-unauth"` {
 		t.Fatalf("dev: %v", err)
 	}
 	_, err = Load(Config{
@@ -646,19 +646,52 @@ func TestDNSBundle(t *testing.T) {
 }
 
 func TestZeroTokensRefuseListen(t *testing.T) {
+	bearerSentence := "spec.auth.mode bearer requires at least one usable token"
+	unknown := func(mode Mode) string {
+		return fmt.Sprintf("management bind refused: unknown auth mode %q", mode.String())
+	}
 	if err := BearerNeedsToken(true)(nil); err == nil || err.Error() != "management bind requires a verifier" {
-		t.Fatalf("nil: %v", err)
+		t.Fatalf("nil true: %v", err)
 	}
+	if err := BearerNeedsToken(false)(nil); err == nil || err.Error() != "management bind requires a verifier" {
+		t.Fatalf("nil false: %v", err)
+	}
+	bearer := mustLoad(t, memCfg(ModeBearer, RejectDuplicateValue, raw("a", "administrator", "secret-value")))
 	zero := mustLoad(t, memCfg(ModeBearer, RejectDuplicateValue))
-	if err := BearerNeedsToken(true)(zero); err == nil {
-		t.Fatal("bearer zero tokens allowed")
-	}
 	loop := mustLoad(t, memCfg(ModeDevLoopbackUnauth, RejectDuplicateValue))
+	both := mustLoad(t, memCfg(ModeBearerAndBasic, RejectDuplicateValue, raw("a", "administrator", "secret-value")))
+	bothZero := mustLoad(t, memCfg(ModeBearerAndBasic, RejectDuplicateValue))
+
 	if err := BearerNeedsToken(true)(loop); err != nil {
-		t.Fatal(err)
+		t.Fatalf("ntp loopback: %v", err)
 	}
-	if err := BearerNeedsToken(false)(loop); err == nil {
-		t.Fatal("netconf allowed dev-loopback")
+	if err := BearerNeedsToken(true)(bearer); err != nil {
+		t.Fatalf("ntp bearer: %v", err)
+	}
+	if err := BearerNeedsToken(true)(zero); err == nil || err.Error() != bearerSentence {
+		t.Fatalf("ntp zero: %v", err)
+	}
+	if err := BearerNeedsToken(true)(both); err == nil || err.Error() != unknown(ModeBearerAndBasic) {
+		t.Fatalf("ntp basic: %v", err)
+	}
+	if err := BearerNeedsToken(true)(bothZero); err == nil || err.Error() != unknown(ModeBearerAndBasic) {
+		t.Fatalf("ntp basic zero: %v", err)
+	}
+
+	if err := BearerNeedsToken(false)(bearer); err != nil {
+		t.Fatalf("netconf bearer: %v", err)
+	}
+	if err := BearerNeedsToken(false)(zero); err == nil || err.Error() != bearerSentence {
+		t.Fatalf("netconf zero: %v", err)
+	}
+	if err := BearerNeedsToken(false)(loop); err == nil || err.Error() != unknown(ModeDevLoopbackUnauth) {
+		t.Fatalf("netconf loop: %v", err)
+	}
+	if err := BearerNeedsToken(false)(both); err == nil || err.Error() != unknown(ModeBearerAndBasic) {
+		t.Fatalf("netconf basic: %v", err)
+	}
+	if err := BearerNeedsToken(false)(bothZero); err == nil || err.Error() != unknown(ModeBearerAndBasic) {
+		t.Fatalf("netconf basic zero: %v", err)
 	}
 }
 

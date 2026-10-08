@@ -518,30 +518,29 @@ func (m *Material) loopback(remote string) bool {
 	return addrLoopback(host)
 }
 
-// BearerNeedsToken is the listen predicate used by ntp (allowDevLoopback true)
-// and by netconf (false). A bearer mode with zero tokens is refused. The error
-// text for that case is "spec.auth.mode bearer requires at least one usable token".
+// BearerNeedsToken is the listen predicate for the repos that have
+// RequireListen. allowDevLoopback true is ntp: dev-loopback-unauth is
+// allowed, and any other non-bearer mode is refused. false is netconf and
+// snmp: only bearer is allowed. A bearer mode with zero tokens is
+// "spec.auth.mode bearer requires at least one usable token". Every other
+// mode is `management bind refused: unknown auth mode %q` of Mode.String().
+// A nil material is "management bind requires a verifier".
 func BearerNeedsToken(allowDevLoopback bool) func(*Material) error {
 	return func(m *Material) error {
 		if m == nil {
 			return kerr.New(kerr.Invalid, "management bind requires a verifier")
 		}
-		switch m.Mode() {
-		case ModeDevLoopbackUnauth:
-			if allowDevLoopback {
-				return nil
-			}
-			return kerr.New(kerr.Invalid, "management bind refused: dev-loopback-unauth")
-		case ModeBearer:
+		mode := m.Mode()
+		if mode == ModeBearer {
 			if m.TokenCount() == 0 {
 				return kerr.New(kerr.Invalid, "spec.auth.mode bearer requires at least one usable token")
 			}
 			return nil
-		case ModeBearerAndBasic:
-			return nil
-		default:
-			return kerr.New(kerr.Invalid, fmt.Sprintf("management bind refused: unknown auth mode %q", m.Mode()))
 		}
+		if allowDevLoopback && mode == ModeDevLoopbackUnauth {
+			return nil
+		}
+		return kerr.New(kerr.Invalid, fmt.Sprintf("management bind refused: unknown auth mode %q", mode.String()))
 	}
 }
 
