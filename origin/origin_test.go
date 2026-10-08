@@ -1,6 +1,10 @@
 package origin
 
 import (
+	"net"
+	"net/netip"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/hilather/go-lab-controlkit/kerr"
@@ -11,7 +15,7 @@ func ntpPolicy() Policy {
 }
 
 func dnsPolicy() Policy {
-	return Policy{Match: ExactCaseSensitive, LocalhostFold: true, ListUnionsLoopback: true}
+	return Policy{Match: ExactCaseSensitive, HostParse: DNSParse, LocalhostFold: true, ListUnionsLoopback: true}
 }
 
 func syslogPolicy() Policy {
@@ -173,6 +177,174 @@ func TestOriginMatchRequired(t *testing.T) {
 	if err := Check("http://localhost", nil, p); !kindIs(err, kerr.Invalid) {
 		t.Fatalf("bad sentinel: %v", err)
 	}
+	p = ntpPolicy()
+	p.HostParse = HostParse(9)
+	if err := Check("http://localhost", nil, p); !kindIs(err, kerr.Invalid) {
+		t.Fatalf("bad host parser: %v", err)
+	}
+}
+
+// TestOriginParsersMatchGolden compares Check with the golden parsers.
+// dns parseHTTPOrigin keeps userinfo and splits on any colon. The five
+// use url.Parse, which strips userinfo and rejects a non-numeric port.
+func TestOriginParsersMatchGolden(t *testing.T) {
+	origins := []string{
+		"",
+		"http://127.0.0.1",
+		"http://user@127.0.0.1",
+		"http://user:pass@127.0.0.1:8080",
+		"https://user@localhost",
+		"http://@127.0.0.1",
+		"http://user@[::1]",
+		"http://user@[::1]:8080",
+		"http://user:pass@[::1]",
+		"http://user@127.0.0.1/",
+		"http://127.0.0.1:abc",
+		"http://localhost:notaport",
+		"http://127.0.0.1#frag",
+		"http://127.0.0.1#",
+		"http://[::1",
+		"http://[::1]junk",
+		"http://[127.0.0.1]",
+		"http://127.0.0.1:80:80",
+		"http://example.com:abc",
+		"http://evil.example",
+		"http://[::ffff:127.0.0.1]",
+		"file://localhost/tmp",
+		"http://127.0.0.1?x=1",
+	}
+	allows := [][]string{
+		nil,
+		{"http://user@127.0.0.1"},
+		{"http://127.0.0.1:80:80"},
+		{"http://evil.example"},
+		{"http://example.com:abc"},
+	}
+	policies := []struct {
+		name string
+		p    Policy
+		want func(string, []string) bool
+	}{
+		{"dns", dnsPolicy(), dnsGoldenAllowed},
+		{"ntp", ntpPolicy(), func(origin string, allow []string) bool {
+			return fiveGoldenAllowed(origin, allow, true, false)
+		}},
+		{"syslog", syslogPolicy(), func(origin string, allow []string) bool {
+			return fiveGoldenAllowed(origin, allow, false, true)
+		}},
+	}
+	for _, pol := range policies {
+		for _, origin := range origins {
+			for _, allow := range allows {
+				err := Check(origin, allow, pol.p)
+				got := err == nil
+				want := pol.want(origin, allow)
+				if got != want {
+					t.Errorf("%s origin %q allow %q got %v want %v err %v", pol.name, origin, allow, got, want, err)
+				}
+			}
+		}
+	}
+}
+
+func dnsGoldenAllowed(origin string, extra []string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	host, ok := dnsGoldenHost(origin)
+	if !ok {
+		return false
+	}
+	if dnsGoldenLoopback(host) {
+		return true
+	}
+	for _, a := range extra {
+		if origin == a {
+			return true
+		}
+	}
+	return false
+}
+
+func dnsGoldenHost(origin string) (string, bool) {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	if !ok {
+		return "", false
+	}
+	scheme = strings.ToLower(scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	host := rest
+	if i := strings.IndexAny(rest, "/?"); i >= 0 {
+		host = rest[:i]
+	}
+	if host == "" {
+		return "", false
+	}
+	hostname := host
+	if strings.HasPrefix(host, "[") {
+		if end := strings.IndexByte(host, ']'); end > 0 {
+			hostname = host[1:end]
+		}
+	} else if strings.Contains(host, ":") {
+		i := strings.LastIndexByte(host, ':')
+		hostname = host[:i]
+	}
+	return hostname, true
+}
+
+func dnsGoldenLoopback(host string) bool {
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback()
+}
+
+func fiveGoldenAllowed(origin string, allow []string, unionLoopback, foldLocalhost bool) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	loopOK := unionLoopback || len(allow) == 0
+	if loopOK && fiveGoldenLoopback(u.Hostname(), foldLocalhost) {
+		return true
+	}
+	for _, allowed := range allow {
+		got := strings.TrimRight(strings.TrimSpace(origin), "/")
+		want := strings.TrimRight(strings.TrimSpace(allowed), "/")
+		if strings.EqualFold(got, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func fiveGoldenLoopback(host string, fold bool) bool {
+	h := strings.TrimSpace(host)
+	if fold {
+		if strings.EqualFold(h, "localhost") {
+			return true
+		}
+	} else if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 func kindIs(err error, k kerr.Kind) bool {

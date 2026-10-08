@@ -17,11 +17,28 @@ type Match int
 
 const (
 	// ExactCaseSensitive compares the trimmed Origin with the allow entry
-	// as written. dns uses this. The allow entry is not trimmed.
+	// as written. dns uses this together with HostParse DNSParse.
+	// The allow entry is not trimmed.
 	ExactCaseSensitive Match = iota + 1
 	// FoldTrimSlash trims space and trailing slashes on both sides and
-	// compares with EqualFold. The five template repos use this.
+	// compares with EqualFold. The five template repos use this, with the
+	// zero HostParse (url.Parse).
 	FoldTrimSlash
+)
+
+// HostParse selects the host taken from an Origin for the loopback check.
+// The zero value, URLParse, is url.Parse. dns sets DNSParse.
+type HostParse int
+
+const (
+	// URLParse is the zero value. net/url strips userinfo and rejects a
+	// non-numeric port. The five template repos use this.
+	URLParse HostParse = iota
+	// DNSParse is dns parseHTTPOrigin. Userinfo stays in the host, a
+	// fragment is not a delimiter, a colon splits the host even when the
+	// port is not numeric, and brackets are trimmed the way dns
+	// isLoopbackHost trims them.
+	DNSParse
 )
 
 // Sentinel is an allow-list token with special meaning. Maildev uses both.
@@ -37,12 +54,14 @@ const (
 )
 
 // Policy is one repo's origin matcher.
+// HostParse zero means url.Parse, which is the five. DNSParse is dns's parser.
 // LocalhostFold false means "localhost" is case-sensitive.
 // ListUnionsLoopback false means a non-empty allow list replaces loopback;
 // an empty allow list is still loopback http(s) only.
 // A nil or empty Sentinels list means the allow list has no sentinels.
 type Policy struct {
 	Match              Match
+	HostParse          HostParse
 	LocalhostFold      bool
 	ListUnionsLoopback bool
 	Sentinels          []Sentinel
@@ -59,7 +78,7 @@ func Check(origin string, allow []string, p Policy) error {
 	if origin == "" {
 		return nil
 	}
-	host, ok := httpHost(origin)
+	host, ok := httpHost(origin, p.HostParse)
 	if !ok {
 		return denied()
 	}
@@ -77,6 +96,9 @@ func Check(origin string, allow []string, p Policy) error {
 func validate(p Policy) error {
 	if p.Match != ExactCaseSensitive && p.Match != FoldTrimSlash {
 		return kerr.New(kerr.Invalid, "origin: match policy is required")
+	}
+	if p.HostParse != URLParse && p.HostParse != DNSParse {
+		return kerr.New(kerr.Invalid, "origin: host parser is invalid")
 	}
 	for _, s := range p.Sentinels {
 		if s != Star && s != Private {
@@ -97,7 +119,14 @@ func loopbackAllowed(p Policy, allow []string) bool {
 	return len(allow) == 0
 }
 
-func httpHost(origin string) (string, bool) {
+func httpHost(origin string, how HostParse) (string, bool) {
+	if how == DNSParse {
+		return dnsHTTPHost(origin)
+	}
+	return urlHTTPHost(origin)
+}
+
+func urlHTTPHost(origin string) (string, bool) {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
 		return "", false
@@ -107,6 +136,42 @@ func httpHost(origin string) (string, bool) {
 		return "", false
 	}
 	return u.Hostname(), true
+}
+
+// dnsHTTPHost is dns parseHTTPOrigin plus the bracket trim in isLoopbackHost.
+func dnsHTTPHost(origin string) (string, bool) {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	if !ok {
+		return "", false
+	}
+	scheme = strings.ToLower(scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	host := rest
+	if i := strings.IndexAny(rest, "/?"); i >= 0 {
+		host = rest[:i]
+	}
+	if host == "" {
+		return "", false
+	}
+	hostname := host
+	if strings.HasPrefix(host, "[") {
+		if end := strings.IndexByte(host, ']'); end > 0 {
+			hostname = host[1:end]
+		}
+	} else if name, ok := splitDNSHostPort(host); ok {
+		hostname = name
+	}
+	return strings.Trim(hostname, "[]"), true
+}
+
+func splitDNSHostPort(hostport string) (string, bool) {
+	if !strings.Contains(hostport, ":") {
+		return "", false
+	}
+	i := strings.LastIndexByte(hostport, ':')
+	return hostport[:i], true
 }
 
 func isLoopback(host string, fold bool) bool {
