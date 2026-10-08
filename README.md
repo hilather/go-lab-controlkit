@@ -80,7 +80,7 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 | netconf relative-ref resolution: `LoadFile`'s validator joins the bootstrap directory, while the compile and the loader use the path as given (3.9, Resolvers) | netconf | accidental | Kept in B (v5.3 item 5): Prepare records both paths, and each renderer keeps its verdict. Converging changes behavior and needs its own decision after M7. |
 | `scope.Table` fields; dns `Evaluator`; `CapAuthorizer`/`ToolExtra` | per repo | product (role models; dns change policy) | Kept. |
 | `session.Config` (TTL, idle, cap, `AtCap`, `IDShape`, `CSRFCompare`), cookie and header names | five vs dns | product (dns console design, `docs/08`) | Kept. |
-| `origin.Policy`: `Match` exact (dns), `ListUnionsLoopback` false (syslog), `LocalhostFold` | per repo | accidental | Owned per repo in B. Converge after M7 in its own plan. |
+| `origin.Policy`: `Match` exact (dns), `HostParse` `DNSParse` (dns pairs it with `ExactCaseSensitive`), `ListUnionsLoopback` false (syslog), `LocalhostFold` | per repo | accidental | Owned per repo in B. Converge after M7 in its own plan. |
 | `origin.Policy.Sentinels` | maildev (ADR 0008) | product | Kept. |
 | kerr mapping (origin code; `unauthenticated` vs `unauthorized`) | per repo | product (wire codes) | Kept. |
 | `ratelimit.Ctor` zero/negative/burst meanings | per repo | accidental, kept for config compatibility | Owned per repo. Converge after M7. |
