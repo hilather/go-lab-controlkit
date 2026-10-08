@@ -14,9 +14,22 @@ Module path: `github.com/hilather/go-lab-controlkit`
 
 ## Status
 
-Pre-release. No package has landed yet, and no version is tagged. The
-packages arrive with `v0.1.0`; that pull request settles the package layout
-and the exact API.
+The v0.1.0 pull request has landed the packages. Nothing is tagged. The
+release workflow lands in the release-prep pull request, before the first
+tag.
+
+## Packages
+
+- `kerr`: error kinds a facade maps onto its own wire code.
+- `authn`: token loading, verifier, stdio pin, secret wiping, and reload.
+- `scope`: principal table and capability gate.
+- `session`: session table, CSRF compare, cookie helpers, and revocation wake.
+- `origin`: Origin allow-list policy.
+- `audit`: bounded ring, fanout, redaction, and the denial flood guard.
+- `idem`: bounded LRU and FIFO idempotency cache.
+- `ratelimit`: capped per-key buckets and a per-call global bucket.
+- `mcpstrict`: duplicate JSON keys, typed subtrees, and open fields.
+- `kittest`: conformance suites that take injected drivers.
 
 ## Rules
 
@@ -48,18 +61,18 @@ tag, never a pseudo-version. The release-prep PR updates this table.
 
 Each per-repo option is classified as product semantics (kept) or accidental
 divergence (converged, with a milestone). The options marked `*` must be
-resolved or explicitly owned before `v1.0.0`. Package and option names follow
-the migration plan and may change in the `v0.1.0` PR. Milestones (M), deltas
+resolved or explicitly owned before `v1.0.0`. Package and option names are
+the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 (C, P) and decisions (Q) refer to that plan.
 
 | Option | Values today | Class | Resolution and milestone |
 |---|---|---|---|
-| `capgate.Unmapped` = Allow `*` | dns, ntp, netconf, maildev, syslog (snmp: Forbid) | accidental, security-relevant | Resolved: each PR-2's P4 commit sets Forbid. The option is deleted before v1.0.0 (M7). |
-| `capgate.FirstCapOnly` `*` | all six (`caps[0]`) | accidental, security-relevant | Resolved: P4 checks every capability. The option is deleted at M7. |
+| `scope.Gate.Unmapped` = Allow `*` | dns, ntp, netconf, maildev, syslog (snmp: Forbid) | accidental, security-relevant | Resolved: each PR-2's P4 commit sets Forbid. The option is deleted before v1.0.0 (M7). |
+| `scope.Gate.FirstCapOnly` `*` | all six (`caps[0]`) | accidental, security-relevant | Resolved: P4 checks every capability. The option is deleted at M7. |
 | `ratelimit` `MaxKeys` 0 `*` | uncapped in dns, ntp REST, snmp, maildev | accidental, security-relevant | Resolved: there is no such value in the kit (constructor error). P6 moves the uncapped limiters in PR-2. |
 | nil-verifier administrator `*` | maildev (REST, MCP, compat), dns | accidental, security-relevant | Resolved: the kit never offers it, and P5 deletes the facade copies in PR-2. |
 | `authn.FileOpts.Harden` = false `*` | all six, in PR-1 | transitional: keeps PR-1 zero-change (3.2) | Resolved: each consumer's C3a commit sets true, and the option is removed before v1.0.0 (M7). |
-| `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Owned by dns before v1.0.0: the P8 warning plus a kittest pin. Enforcement is Matt's decision (Q8), after v1.0.0. |
+| `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Owned by dns before v1.0.0: the P8 warning plus a kittest pin. Token floor enforcement: deferred, warn-only in B (Q8). |
 | `authn.Duplicates` = FirstMatchWins `*` | dns | accidental | Owned by dns before v1.0.0: a kittest pin and a ledger entry. Converging would reject dns configs that boot today, which needs its own decision. |
 | `authn.Accept` (zero-token predicate) | ntp, netconf: refuse; snmp, maildev, syslog: none | product today | Kept in B. P9 (Q11, needs Matt) is the post-migration convergence. |
 | `FileOpts.Line`, `Resolve`, `SkipMissing`; `DNSBundle`; dns identity defaults | per repo | product (documented file formats and path rules) | Kept. |
@@ -92,15 +105,17 @@ the migration plan and may change in the `v0.1.0` PR. Milestones (M), deltas
 
 ## Contributing
 
-Changes land on `main` through pull requests. These CI checks must pass:
+Changes land on `main` through pull requests. Branch protection on `main`:
 
-- `go vet` (also gofmt and `go build ./...`)
-- `go test -race ./...`
-- `fuzz smoke`
-- `govulncheck`
-- `replace/go.work check`
+- Required checks: `go vet`, `go test -race ./...`, `fuzz smoke`, `govulncheck`, `replace/go.work check`.
+- `strict: false`. A pull request need not be up to date with `main`.
+- `enforce_admins: true`.
+- A pull request is required for every change, with 0 required approving reviews.
+- No force push and no branch deletion.
 
-CI pins Go 1.26.8. Run the same checks locally with `make ci`.
+The merge gate: Keystone posts a COMMENT review with LGTM, and Helm squash-merges only when the `commit_id` of Keystone's latest LGTM COMMENT review equals the pull request head SHA. A push after the LGTM needs a new one. Muse never merges or tags.
+
+CI pins Go 1.26.8. The `go vet` job also runs gofmt and `go build ./...`. Run the same checks locally with `make ci`.
 
 ## Security
 

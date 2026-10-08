@@ -34,7 +34,7 @@ type Spec struct {
 
 // Check rejects duplicate keys, then unknown keys in Typed subtrees, then
 // failing Open validators. Nil, an empty slice, "{}", and JSON null are
-// accepted. Whitespace-only input returns Invalid and does not panic.
+// accepted. Whitespace-only input is treated as empty and does not panic.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
