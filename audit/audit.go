@@ -46,8 +46,10 @@ import (
 // kept and indexed, and SetID is not called (syslog's caller-supplied id).
 // An empty result is replaced with NewID(seq), or the random hex id, passed
 // to SetID, then read back with GetID when that is set, so the ring indexes
-// the id actually stored. Nil means the ring indexes the id it passed to
-// SetID, and SetID must store that id.
+// the id actually stored. An empty or colliding id is replaced with a counter
+// id, passed to SetID, and read back the same way. That fallback repeats
+// while the stored id is empty or already taken. Nil means the ring indexes
+// the id it passed to SetID, and SetID must store that id.
 type RingOptions[E any] struct {
 	Max         int
 	SetID       func(*E, string)
@@ -114,6 +116,8 @@ func NewRing[E any](o RingOptions[E]) (*Ring[E], error) {
 // Otherwise the id comes from NewID, or from a random hex id when NewID is
 // nil, and is written with SetID. The ring indexes the id that is stored.
 // An empty or colliding id is replaced with a counter id and passed to SetID.
+// When GetID is set, the stored id is read back and the fallback repeats
+// while that id is empty or already taken. The ring indexes the id stored.
 // When the ring is full, a denied row evicts the oldest denied row once denied
 // rows have reached DeniedShare of the capacity. Otherwise the oldest row goes.
 // A denied append that would evict an OK row while DeniedShare*Max truncates
@@ -147,11 +151,16 @@ func (r *Ring[E]) Append(e E) E {
 		}
 	}
 	if id == "" || r.idTaken(id) {
-		id = fallbackID()
-		for r.idTaken(id) {
+		for {
 			id = fallbackID()
+			r.setID(&e, id)
+			if r.getID != nil {
+				id = r.getID(e)
+			}
+			if id != "" && !r.idTaken(id) {
+				break
+			}
 		}
-		r.setID(&e, id)
 	}
 	r.index[id] = len(r.rows)
 	r.rows = append(r.rows, ringRow[E]{id: id, e: e})

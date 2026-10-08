@@ -196,6 +196,36 @@ func TestRingIDSchemes(t *testing.T) {
 		t.Fatal(clash.Len())
 	}
 
+	// SetID rewrites a fallback minted for a caller-supplied duplicate.
+	// The ring must index the id GetID reads back.
+	rewriteClash, err := NewRing[row](RingOptions[row]{
+		Max: 4,
+		SetID: func(e *row, id string) {
+			e.ID = "id-" + id
+		},
+		GetID: func(e row) string { return e.ID },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerRow := rewriteClash.Append(row{ID: "dup", Name: "first"})
+	fallbackRow := rewriteClash.Append(row{ID: "dup", Name: "second"})
+	if callerRow.ID != "dup" {
+		t.Fatalf("caller id %q", callerRow.ID)
+	}
+	if fallbackRow.ID == "dup" || fallbackRow.ID == "" || !strings.HasPrefix(fallbackRow.ID, "id-") {
+		t.Fatalf("rewritten fallback %q", fallbackRow.ID)
+	}
+	if got, ok := rewriteClash.Get(fallbackRow.ID); !ok || got.Name != "second" {
+		t.Fatalf("stored id missed: %+v %v", got, ok)
+	}
+	if got, ok := rewriteClash.Get("dup"); !ok || got.Name != "first" {
+		t.Fatalf("first row %+v %v", got, ok)
+	}
+	if rewriteClash.Len() != 2 {
+		t.Fatal(rewriteClash.Len())
+	}
+
 	a := fallbackID()
 	b := fallbackID()
 	if a == b || len(a) != 32 {
