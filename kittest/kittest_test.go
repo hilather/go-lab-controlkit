@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,8 +50,9 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		{"ResetZeroTokens", func(t *testing.T) { ResetZeroTokens(t, newZero(false)) }, []func(Testing){
 			func(tb Testing) { ResetZeroTokens(tb, newZero(true)) },
 		}},
-		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(false)) }, []func(Testing){
-			func(tb Testing) { ApplyNoSecretRead(tb, newApply(true)) },
+		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(t, "")) }, []func(Testing){
+			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "read")) },
+			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "reset")) },
 		}},
 		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(t, false)) }, []func(Testing){
 			func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(nil, true)) },
@@ -433,26 +435,67 @@ func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult
 }
 
 type applyRef struct {
-	v      *authn.Verifier
-	s      *session.Store
-	cookie string
-	opens  int
-	bug    bool
+	path    string
+	v       *authn.Verifier
+	s       *session.Store
+	cookie  string
+	bug     string
+	failTxt string
 }
 
-func newApply(bug bool) *applyRef {
-	v := mustVer(matRole(secretA, "administrator"))
-	s := mustSess()
-	return &applyRef{v: v, s: s, cookie: login(s), bug: bug}
-}
-
-func (d *applyRef) MakeUnreadable(context.Context) {}
-func (d *applyRef) Apply(context.Context) (bool, int) {
-	if d.bug {
-		d.opens++
+func newApply(t *testing.T, bug string) *applyRef {
+	dir := tdir(t)
+	path := filepath.Join(dir, "token")
+	writeFile(path, secretA+"\n", 0600)
+	st, err := prepareToken(path)
+	if err != nil || st == nil || st.Err() != nil {
+		panic(fmt.Sprintf("apply start: %v", stageErr(err, st)))
 	}
-	return true, d.opens
+	v := authn.Empty()
+	if !st.Commit(v) {
+		panic("apply start commit")
+	}
+	if _, err = v.AuthenticateBearer([]byte(secretA)); err != nil {
+		panic(err)
+	}
+	s := mustSess()
+	if _, err = s.Bind(v); err != nil {
+		panic(err)
+	}
+	return &applyRef{
+		path: path, v: v, s: s, cookie: login(s), bug: bug,
+		failTxt: missingSecretSentence(path),
+	}
 }
+
+// MakeUnreadable leaves the file in place so the missing-file arm can
+// remove it. Mode 000 is enough for the suite: apply must not open it.
+func (d *applyRef) MakeUnreadable(context.Context) {
+	if err := os.Chmod(d.path, 0); err != nil {
+		panic(err)
+	}
+}
+
+func (d *applyRef) MakeMissing(context.Context) {
+	_ = os.Chmod(d.path, 0600)
+	if err := os.Remove(d.path); err != nil && !os.IsNotExist(err) {
+		panic(err)
+	}
+}
+
+// Apply does not run Prepare. P2 keeps the loaded bearer. The "read"
+// bug is an apply that opens the secret file.
+func (d *applyRef) Apply(context.Context) (bool, int) {
+	if d.bug == "read" {
+		st, err := prepareToken(d.path)
+		if err != nil || st == nil {
+			return true, 1
+		}
+		return true, len(opensFrom(st))
+	}
+	return true, 0
+}
+
 func (d *applyRef) BearerWorks(context.Context) bool {
 	_, err := d.v.AuthenticateBearer([]byte(secretA))
 	return err == nil
@@ -460,6 +503,46 @@ func (d *applyRef) BearerWorks(context.Context) bool {
 func (d *applyRef) SessionWorks(context.Context) bool {
 	_, ok := d.s.Lookup(d.cookie)
 	return ok
+}
+
+func (d *applyRef) FailureText() string { return d.failTxt }
+
+// Reset is the reset after the file is gone. The "reset" bug reports
+// success, which the missing-file arm must reject.
+func (d *applyRef) Reset(context.Context) (string, error) {
+	if d.bug == "reset" {
+		return "", nil
+	}
+	st, err := prepareToken(d.path)
+	if err != nil {
+		return err.Error(), err
+	}
+	if st == nil || st.Err() == nil {
+		return "", nil
+	}
+	return st.Err().Error(), st.Err()
+}
+
+func prepareToken(path string) (*authn.Staged, error) {
+	return authn.Prepare(authn.Config{
+		Mode: authn.ModeBearer, Duplicates: authn.RejectDuplicateValue,
+		Roles: roleTable(), MinSecretBytes: 32,
+		Source: authn.PerTokenFiles([]authn.FileToken{{
+			ID: "ada", Role: "administrator", SecretFile: path,
+		}}, fileOpts()),
+	})
+}
+
+// missingSecretSentence is the loader's message for path once it is gone.
+// It is characterized on a sibling that was never created, then the path
+// is substituted, so the expected text is today's Prepare error.
+func missingSecretSentence(path string) string {
+	ghost := path + ".absent"
+	st, err := prepareToken(ghost)
+	if err != nil || st == nil || st.Err() == nil {
+		panic(fmt.Sprintf("characterize missing %s: %v", ghost, err))
+	}
+	return strings.ReplaceAll(st.Err().Error(), ghost, path)
 }
 
 type countSrc struct {

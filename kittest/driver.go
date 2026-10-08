@@ -81,11 +81,22 @@ type ZeroTokenDriver interface {
 }
 
 // ApplyDriver is an apply that must not open a secret file.
+// MakeUnreadable and MakeMissing run after a successful start.
+// Apply returns success, which is HTTP 200 in the driver's terms, and
+// the number of secret-file opens during that apply. Apply does not run
+// Prepare. That is P2: rotation happens on reset or restart.
+// FailureText is today's reset-failure message once the secret file is
+// missing. It is the same role as RebindDriver.FailureText and
+// BootDriver.BoundMessage. Reset is the reset after the missing-file
+// apply. It fails, and its message equals FailureText.
 type ApplyDriver interface {
 	MakeUnreadable(ctx context.Context)
+	MakeMissing(ctx context.Context)
 	Apply(ctx context.Context) (ok bool, opens int)
 	BearerWorks(ctx context.Context) bool
 	SessionWorks(ctx context.Context) bool
+	FailureText() string
+	Reset(ctx context.Context) (message string, err error)
 }
 
 // LoadOnceDriver counts secret-file opens for one reset.

@@ -215,6 +215,13 @@ func zeroTokenWant() map[ZeroTokenShape]ZeroTokenResult {
 
 // ApplyNoSecretRead checks that an apply opens no secret file and leaves
 // the bearer and the cookie usable.
+//
+// The unreadable arm makes the secret file unreadable. The missing-file
+// arm removes it after the same successful start. Both applies succeed,
+// which is HTTP 200 in the driver's terms, and open no secret file. The
+// old bearer still authenticates and the cookie session still works.
+// After the missing file, the next reset fails with FailureText, today's
+// reset message. Apply does not run Prepare. That is P2.
 func ApplyNoSecretRead(t Testing, d ApplyDriver) {
 	t.Helper()
 	ctx := context.Background()
@@ -225,6 +232,21 @@ func ApplyNoSecretRead(t Testing, d ApplyDriver) {
 	}
 	if !d.BearerWorks(ctx) || !d.SessionWorks(ctx) {
 		t.Fatalf("apply locked the admin out")
+	}
+	if d.FailureText() == "" {
+		t.Fatalf("reset failure text is empty")
+	}
+	d.MakeMissing(ctx)
+	ok, opens = d.Apply(ctx)
+	if !ok || opens != 0 {
+		t.Fatalf("missing apply ok %v opens %d", ok, opens)
+	}
+	if !d.BearerWorks(ctx) || !d.SessionWorks(ctx) {
+		t.Fatalf("missing apply locked the admin out")
+	}
+	msg, err := d.Reset(ctx)
+	if err == nil || msg != d.FailureText() {
+		t.Fatalf("reset after missing file: msg %q err %v want %q", msg, err, d.FailureText())
 	}
 }
 
