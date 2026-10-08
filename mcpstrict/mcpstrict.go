@@ -8,6 +8,7 @@ package mcpstrict
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -167,17 +168,66 @@ func splitPath(path string) []string {
 	return parts
 }
 
+// openError is a failing Open validator. The sentence names only the path,
+// so a validator cannot echo a secret to the MCP client. Unwrap returns
+// the validator error. As reports kerr.Invalid so KindOf still works.
+type openError struct {
+	err error
+	kit *kerr.Error
+}
+
+func (e *openError) Error() string {
+	if e == nil || e.kit == nil {
+		return "mcpstrict: invalid value"
+	}
+	return e.kit.Error()
+}
+
+func (e *openError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (e *openError) As(target any) bool {
+	if e == nil || e.kit == nil {
+		return false
+	}
+	ke, ok := target.(**kerr.Error)
+	if !ok {
+		return false
+	}
+	*ke = e.kit
+	return true
+}
+
 func checkOpen(raws map[string]json.RawMessage, spec Spec) error {
+	if len(spec.Open) == 0 || len(raws) == 0 {
+		return nil
+	}
+	patterns := make([]string, 0, len(spec.Open))
 	for pattern, fn := range spec.Open {
 		if fn == nil {
 			continue
 		}
-		for path, raw := range raws {
+		patterns = append(patterns, pattern)
+	}
+	sort.Strings(patterns)
+	paths := make([]string, 0, len(raws))
+	for path := range raws {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, pattern := range patterns {
+		fn := spec.Open[pattern]
+		for _, path := range paths {
 			if _, ok := matchPattern(pattern, path); !ok {
 				continue
 			}
-			if err := fn(raw); err != nil {
-				return invalid("mcpstrict: open " + displayPath(path) + ": " + err.Error())
+			if err := fn(raws[path]); err != nil {
+				msg := "mcpstrict: invalid value at " + displayPath(path)
+				return &openError{err: err, kit: kerr.New(kerr.Invalid, msg)}
 			}
 		}
 	}

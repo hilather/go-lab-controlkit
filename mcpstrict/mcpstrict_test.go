@@ -85,10 +85,11 @@ func TestCheckTypedViewSpecAndSizeKeys(t *testing.T) {
 }
 
 func TestCheckOpenValidator(t *testing.T) {
+	want := errors.New("state must be an object")
 	spec := Spec{Open: map[string]func(json.RawMessage) error{
 		"/state": func(raw json.RawMessage) error {
 			if len(raw) == 0 || raw[0] != '{' {
-				return errors.New("state must be an object")
+				return want
 			}
 			return nil
 		},
@@ -97,10 +98,48 @@ func TestCheckOpenValidator(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := Check([]byte(`{"state":1}`), spec)
-	if err == nil || !kindIs(err, kerr.Invalid) || !strings.Contains(err.Error(), "state must be an object") {
+	if err == nil || !kindIs(err, kerr.Invalid) {
 		t.Fatal(err)
 	}
+	if err.Error() != "mcpstrict: invalid value at /state" {
+		t.Fatal(err)
+	}
+	if strings.Contains(err.Error(), "state must be an object") {
+		t.Fatalf("validator text in sentence: %v", err)
+	}
+	if !errors.Is(err, want) || errors.Unwrap(err) != want {
+		t.Fatalf("validator error not retained: %v", err)
+	}
 	if err := Check([]byte(`{"other":1}`), spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckOpenStablePathOnly(t *testing.T) {
+	aErr := errors.New("secret-a")
+	zErr := errors.New("secret-z")
+	spec := Spec{Open: map[string]func(json.RawMessage) error{
+		"/z": func(json.RawMessage) error { return zErr },
+		"/a": func(json.RawMessage) error { return aErr },
+	}}
+	raw := []byte(`{"z":1,"a":1}`)
+	for i := 0; i < 20; i++ {
+		err := Check(raw, spec)
+		if err == nil || err.Error() != "mcpstrict: invalid value at /a" {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Fatal(err)
+		}
+		if !errors.Is(err, aErr) || !kindIs(err, kerr.Invalid) {
+			t.Fatal(err)
+		}
+	}
+	star := Spec{Open: map[string]func(json.RawMessage) error{
+		"/items/*": func(json.RawMessage) error { return errors.New("nope") },
+	}}
+	err := Check([]byte(`{"items":{"z":1,"a":2}}`), star)
+	if err == nil || err.Error() != "mcpstrict: invalid value at /items/a" {
 		t.Fatal(err)
 	}
 }
