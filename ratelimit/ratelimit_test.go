@@ -117,6 +117,42 @@ func TestSetRateLive(t *testing.T) {
 	}
 }
 
+func TestSetRateClampsAtSameTimestamp(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(1, 10, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("seed")
+	}
+	// Balance is 9. Cutting burst to 1 at this same timestamp must clamp
+	// before the next spend, or the call still spends the old balance.
+	k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive})
+	if !k.Allow("a") {
+		t.Fatal("clamped burst should still allow one")
+	}
+	if k.Allow("a") {
+		t.Fatal("burst 1 was not applied at the same timestamp")
+	}
+}
+
+func TestBackwardClockBurnsTokens(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(10, 5, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("seed")
+	}
+	// tokens is 4. One second backward at rate 10 subtracts 10.
+	now = now.Add(-time.Second)
+	if k.Allow("a") {
+		t.Fatal("backward step kept the old balance")
+	}
+}
+
 func TestIdleCutoffFollowsSetRate(t *testing.T) {
 	var now time.Time
 	clock := func() time.Time { return now }

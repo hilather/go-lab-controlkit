@@ -202,12 +202,14 @@ func (k *Keyed) Allow(key string) bool {
 		b.elem = k.order.PushBack(b)
 		k.buckets[key] = b
 	} else {
+		// ntp, snmp, and maildev always add elapsed*rate, including a
+		// backward step, and always clamp to the current burst. A SetRate
+		// that lowers burst therefore applies on the next Allow at the
+		// same timestamp. dns refills only when elapsed > 0.
 		elapsed := now.Sub(b.last).Seconds()
-		if elapsed > 0 {
-			b.tokens += elapsed * k.rate
-			if b.tokens > k.burst {
-				b.tokens = k.burst
-			}
+		b.tokens += elapsed * k.rate
+		if b.tokens > k.burst {
+			b.tokens = k.burst
 		}
 		b.last = now
 		k.order.MoveToBack(b.elem)
