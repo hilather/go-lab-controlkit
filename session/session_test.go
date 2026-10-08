@@ -246,6 +246,75 @@ func TestSessionRotate(t *testing.T) {
 	}
 }
 
+func TestCSRFReadBackDoesNotSlide(t *testing.T) {
+	s := mustStore(t, baseCfg())
+	now := clock(t, s)
+	iss, err := s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf, ok := s.CSRF(iss.Cookie)
+	if !ok || csrf != iss.CSRF {
+		t.Fatalf("csrf %q ok=%v", csrf, ok)
+	}
+	*now = now.Add(30 * time.Minute)
+	sess, ok := s.Lookup(iss.Cookie)
+	if !ok {
+		t.Fatal("lookup")
+	}
+	csrf, ok = s.CSRF(iss.Cookie)
+	if !ok || csrf != iss.CSRF {
+		t.Fatal("csrf after lookup")
+	}
+	got, ok := s.View(iss.Cookie)
+	if !ok || !got.LastSeen.Equal(sess.LastSeen) {
+		t.Fatal("csrf slid the idle clock")
+	}
+	*now = sess.LastSeen.Add(time.Hour)
+	if _, ok := s.CSRF(iss.Cookie); !ok {
+		t.Fatal("exactly idle was expired")
+	}
+	*now = sess.LastSeen.Add(time.Hour + time.Nanosecond)
+	n := 0
+	s.OnDelete(func() { n++ })
+	if _, ok := s.CSRF(iss.Cookie); ok || n != 1 {
+		t.Fatalf("expired csrf ok hooks=%d", n)
+	}
+	if _, ok := s.CSRF(""); ok {
+		t.Fatal("empty cookie")
+	}
+	if _, ok := s.CSRF("missing"); ok {
+		t.Fatal("missing cookie")
+	}
+	var nilStore *Store
+	if _, ok := nilStore.CSRF(iss.Cookie); ok {
+		t.Fatal("nil store")
+	}
+
+	v := mustVer(t, mustMat(t, "one"))
+	s = mustStore(t, baseCfg())
+	unreg, err := s.Bind(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreg()
+	s.mu.Lock()
+	s.verifier = v
+	s.mu.Unlock()
+	iss, err = s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.Swap(mustMat(t, "two")) {
+		t.Fatal("swap")
+	}
+	n = 0
+	s.OnDelete(func() { n++ })
+	if _, ok := s.CSRF(iss.Cookie); ok || n != 1 {
+		t.Fatalf("stale csrf ok hooks=%d", n)
+	}
+}
+
 func TestSessionViewDoesNotSlide(t *testing.T) {
 	s := mustStore(t, baseCfg())
 	now := clock(t, s)

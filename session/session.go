@@ -1,5 +1,5 @@
 // Package session is the process-local UI session table.
-// Expired rows stay until the next Lookup, View, ValidCSRF, or Create.
+// Expired rows stay until the next Lookup, View, CSRF, ValidCSRF, or Create.
 // There is no timer goroutine. OnDelete hooks run after the store lock is
 // released, once per removing call. A hook may call back into the store.
 package session
@@ -69,7 +69,7 @@ type Config struct {
 }
 
 // Session is the public view of one row. It does not include the cookie
-// secret or the CSRF secret.
+// secret or the CSRF secret. CSRF returns the secret for a live cookie.
 type Session struct {
 	ID         string
 	Principal  scope.Principal
@@ -246,6 +246,34 @@ func (s *Store) Lookup(cookie string) (Session, bool) {
 	rec.lastSeen = now
 	rec.public.LastSeen = now
 	out := rec.view()
+	s.mu.Unlock()
+	return out, true
+}
+
+// CSRF returns the CSRF secret for a live cookie session.
+// Expiry and generation match View, and LastSeen does not slide.
+// An expired or stale row is deleted and fires OnDelete once.
+// Golden GET /v1/session reads the secret from Lookup, which does slide.
+// A facade that calls Lookup and then CSRF slides the idle clock once.
+func (s *Store) CSRF(cookie string) (string, bool) {
+	if s == nil || cookie == "" {
+		return "", false
+	}
+	now := s.currentTime()
+	gen, bound := s.generationBound()
+	s.mu.Lock()
+	rec, ok := s.sessions[cookie]
+	if !ok || s.expired(rec, now) || (bound && rec.gen != gen) {
+		if ok {
+			delete(s.sessions, cookie)
+		}
+		s.mu.Unlock()
+		if ok {
+			s.notify()
+		}
+		return "", false
+	}
+	out := rec.csrf
 	s.mu.Unlock()
 	return out, true
 }
@@ -451,8 +479,9 @@ func (s *Store) OnDelete(fn func()) (unregister func()) {
 }
 
 // Bind registers Clear as an identity-change hook and records v.Generation
-// on every later Create. Lookup, View, ValidCSRF, and Rotate reject a session
-// whose generation is not current, so a missed hook cannot keep a stale row.
+// on every later Create. Lookup, View, CSRF, ValidCSRF, and Rotate reject a
+// session whose generation is not current, so a missed hook cannot keep a
+// stale row.
 // A nil verifier is an error. The returned function removes the hook and the
 // generation check.
 func (s *Store) Bind(v *authn.Verifier) (unregister func(), err error) {
