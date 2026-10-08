@@ -1192,12 +1192,19 @@ type denyRef struct {
 
 func newDenied(bug string) *denyRef {
 	rec := &audit.CountRecorder{}
-	clock := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	g, err := audit.NewDeniedGuard(rec, func() time.Time { return clock })
+	d := &denyRef{
+		rec:   rec,
+		clock: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		bug:   bug,
+	}
+	// The guard must read d.clock. A closure over a local copy stays at
+	// the start time while bump advances the field.
+	g, err := audit.NewDeniedGuard(rec, func() time.Time { return d.clock })
 	if err != nil {
 		panic(err)
 	}
-	return &denyRef{rec: rec, guard: g, clock: clock, bug: bug}
+	d.guard = g
+	return d
 }
 
 // bump records one denial and returns the row read back from the recorder.
@@ -1226,8 +1233,15 @@ func (d *denyRef) bump(transport, code, cap string, status int) DenialObs {
 	return DenialObs{Status: status, Rows: len(evs) - before, Row: row}
 }
 
-func (d *denyRef) Routes(context.Context) []string { return []string{"/v1/state", "/v1/audit"} }
-func (d *denyRef) Tools(context.Context) []string  { return []string{"state_apply"} }
+func (d *denyRef) Routes(context.Context) []string {
+	// More denials than the guard's burst of 10. Each call advances the
+	// clock the guard reads, so a stuck clock suppresses the later rows.
+	return []string{
+		"/v1/state", "/v1/audit", "/v1/metrics", "/v1/health",
+		"/v1/config", "/v1/listeners", "/v1/tokens", "/v1/sessions",
+	}
+}
+func (d *denyRef) Tools(context.Context) []string { return []string{"state_apply"} }
 func (d *denyRef) WantRoute(route string) AuditFields {
 	return AuditFields{Transport: "rest", Capability: route, Code: "forbidden"}
 }
