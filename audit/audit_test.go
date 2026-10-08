@@ -128,16 +128,149 @@ func TestRedaction(t *testing.T) {
 	if strings.Contains(blob, secret) || strings.Contains(blob, "BEGIN PRIVATE") {
 		t.Fatalf("secret survived: %s", blob)
 	}
-	if !strings.Contains(blob, "[redacted]") || !strings.Contains(blob, "Bearer [redacted]") {
+	if !strings.Contains(blob, "[redacted]") {
 		t.Fatalf("redaction marker missing: %s", blob)
 	}
-	js, err := rd.JSON([]byte(`{"token":"` + secret + `","note":"Bearer ` + secret + `"}`))
+	js, err := rd.JSON([]byte(`{"token":"` + secret + `","note":"kept"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(js), secret) {
 		t.Fatal(string(js))
 	}
+	// BearerPrefix applies to String, not to a JSON string value.
+	kept, err := rd.JSON([]byte(`{"note":"Bearer ` + secret + `"}`))
+	if err != nil || !strings.Contains(string(kept), secret) {
+		t.Fatalf("json bearer value %s %v", kept, err)
+	}
+	// BearerPrefix replaces the whole reason. It does not leave a "Bearer " prefix.
+	if got := rd.String("Bearer " + secret); got != "[redacted]" {
+		t.Fatalf("bearer reason %q", got)
+	}
+}
+
+func TestRedactorPortsRepoCases(t *testing.T) {
+	const marker = "[redacted]"
+	dnsKeys := map[string]bool{
+		"secret": true, "secretref": true, "token": true, "password": true,
+		"authorization": true, "bearer": true, "credential": true, "credentials": true,
+		"apikey": true, "api_key": true,
+	}
+	basePEM := map[string]bool{
+		"secret": true, "secretref": true, "secretfile": true, "token": true, "password": true,
+		"authorization": true, "bearer": true, "credential": true, "credentials": true,
+		"apikey": true, "api_key": true, "privatekey": true, "private_key": true, "cookie": true,
+	}
+	snmpKeys := copyKeys(basePEM)
+	snmpKeys["community"] = true
+	netconfKeys := copyKeys(basePEM)
+	netconfKeys["passwordfile"] = true
+	netconfKeys["authorizedkeysfile"] = true
+	netconfKeys["hostkeyfile"] = true
+
+	dns := Redactor{Keys: dnsKeys, BearerPrefix: true, ColonLines: true}
+	if got := dns.String("Bearer super-secret"); got != marker {
+		t.Fatalf("dns bearer %q", got)
+	}
+	if got := dns.String("token: hunter2"); got != "token: "+marker {
+		t.Fatalf("dns token line %q", got)
+	}
+	if got := dns.String("password: hunter2\nkeep"); got != "password: "+marker+"\nkeep" {
+		t.Fatalf("dns password line %q", got)
+	}
+	// maildev shares the bearer prefix and does not blank token: lines.
+	mail := Redactor{Keys: dnsKeys, BearerPrefix: true}
+	if got := mail.String("Bearer hunter2"); got != marker {
+		t.Fatalf("maildev bearer %q", got)
+	}
+	if got := mail.String("token: hunter2"); got != "token: hunter2" {
+		t.Fatalf("maildev kept the token line, got %q", got)
+	}
+	after, err := dns.Value("spec.management.auth", []byte(`{"secretRef":"/run/secrets/token"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(after), "/run/secrets/token") || !strings.Contains(string(after), marker) {
+		t.Fatalf("dns secretRef leaked: %s", after)
+	}
+
+	encrypted := "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\nMIIE\n-----END RSA PRIVATE KEY-----"
+	for name, keys := range map[string]map[string]bool{"ntp": basePEM, "snmp": snmpKeys, "netconf": netconfKeys} {
+		rd := Redactor{Keys: keys, PEM: true}
+		if got := rd.String(encrypted); got != marker {
+			t.Fatalf("%s encrypted pem %q", name, got)
+		}
+		raw, err := rd.JSON([]byte(encrypted))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != `"`+marker+`"` {
+			t.Fatalf("%s non-json pem %s", name, raw)
+		}
+		js, err := rd.JSON([]byte(`{"note":"` + strings.ReplaceAll(encrypted, "\n", `\n`) + `"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(js), "BEGIN ") || strings.Contains(string(js), "DEK-Info") {
+			t.Fatalf("%s json pem leaked: %s", name, js)
+		}
+	}
+
+	ntp := Redactor{Keys: basePEM, PEM: true}
+	got, err := ntp.Value("spec.auth.tokens[0].secretFile", []byte(`"/run/secrets/b"`))
+	if err != nil || string(got) != `"`+marker+`"` {
+		t.Fatalf("ntp secretFile path %s %v", got, err)
+	}
+	snmp := Redactor{Keys: snmpKeys, PEM: true}
+	got, err = snmp.Value("spec.users[0]", []byte(`{"name":"alice","secretFile":"/run/secrets/b"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "/run/secrets/b") || !strings.Contains(string(got), marker) {
+		t.Fatalf("snmp secretFile key leaked: %s", got)
+	}
+	if !strings.Contains(string(got), "alice") {
+		t.Fatalf("snmp kept name: %s", got)
+	}
+	nc := Redactor{Keys: netconfKeys, PEM: true}
+	got, err = nc.Value("spec.users[0].passwordFile", []byte(`"/run/secrets/bob"`))
+	if err != nil || string(got) != `"`+marker+`"` {
+		t.Fatalf("netconf passwordFile %s %v", got, err)
+	}
+	mailPath, err := mail.Value("spec.smtp.auth.password", []byte(`"new"`))
+	if err != nil || string(mailPath) != `"`+marker+`"` {
+		t.Fatalf("maildev password path %s %v", mailPath, err)
+	}
+
+	// Case-folded keys: Token / secretFile / passwordFile must not survive.
+	folded, err := nc.JSON([]byte(`{"Token":"t","passwordFile":"p","secretFile":"s","ok":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(folded), `"t"`) || strings.Contains(string(folded), `"p"`) || strings.Contains(string(folded), `"s"`) {
+		t.Fatalf("mixed-case keys leaked: %s", folded)
+	}
+
+	// UseNumber keeps 1.0 and an integer past the float64 mantissa.
+	nums, err := dns.JSON([]byte(`{"n":1.0,"big":9007199254740993}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(nums), "1.0") || !strings.Contains(string(nums), "9007199254740993") {
+		t.Fatalf("numbers rewritten: %s", nums)
+	}
+	plain, err := dns.JSON([]byte("not-json"))
+	if err != nil || string(plain) != "not-json" {
+		t.Fatalf("dns non-json %q %v", plain, err)
+	}
+}
+
+func copyKeys(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func TestDeniedFloodGuard(t *testing.T) {

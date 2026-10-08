@@ -3,12 +3,12 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -259,22 +259,37 @@ func (f *Fanout[E]) DeliveryFailures() uint64 {
 	return f.fails.Load()
 }
 
-// Redactor blanks sensitive map keys, PEM blocks, and Bearer tokens.
+// Redactor blanks sensitive map keys, PEM text, and bearer reasons.
 // A zero Redactor redacts nothing. Keys nil means no key redaction.
+//
+// Keys are matched case-insensitively. Store lowercase names, which is
+// what every repo's secret set does. A mixed-case map entry is not consulted.
+//
+// PEM, when true, replaces a whole string that contains both "BEGIN " and
+// "PRIVATE" (ntp, snmp, netconf), including an encrypted PEM block and a
+// non-JSON document. False, the zero value, keeps that text (dns, maildev).
+//
+// BearerPrefix, when true, replaces a whole string whose trimmed text starts
+// with "bearer " (any case) with "[redacted]" (dns, maildev). False, the zero
+// value, keeps a bearer reason (ntp, snmp, netconf). It applies to String,
+// not to JSON values.
+//
+// ColonLines, when true, rewrites each line that contains a secret key
+// followed by ":" so the text after the first colon is " [redacted]" (dns).
+// False, the zero value, leaves those lines unchanged. maildev does not set
+// this: its redactText only applies the bearer prefix.
 type Redactor struct {
 	Keys         map[string]bool
 	PEM          bool
 	BearerPrefix bool
+	ColonLines   bool
 }
 
 const redacted = "[redacted]"
 
-var (
-	pemRE    = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]+-----[A-Za-z0-9+/=\s]+-----END [A-Z0-9 ]+-----`)
-	bearerRE = regexp.MustCompile(`(?i)Bearer\s+\S+`)
-)
-
-// Map returns a deep copy of m with redaction applied.
+// Map returns a deep copy of m with key and PEM redaction applied.
+// BearerPrefix and ColonLines are not applied to map values. Numbers are
+// left as the caller decoded them.
 func (r Redactor) Map(m map[string]any) map[string]any {
 	if m == nil {
 		return nil
@@ -282,21 +297,80 @@ func (r Redactor) Map(m map[string]any) map[string]any {
 	return r.walk(m).(map[string]any)
 }
 
-// JSON redacts a JSON document and returns the canonical encoding of the result.
+// JSON redacts a JSON document and returns the encoding of the result.
+// Numbers are decoded with UseNumber, so a literal such as 1.0 or an
+// integer above 2^53 is preserved. Empty input and JSON null are returned
+// trimmed and unchanged. A decode error returns the trimmed input and a nil
+// error, unless PEM is set and the input contains a private key, in which
+// case the result is the JSON string "[redacted]".
 func (r Redactor) JSON(b []byte) ([]byte, error) {
-	if len(b) == 0 {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
 		return b, nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
-		return nil, err
+	if err := dec.Decode(&v); err != nil {
+		if r.PEM && containsPrivateKey(string(b)) {
+			return []byte(`"` + redacted + `"`), nil
+		}
+		return b, nil
 	}
-	return json.Marshal(r.walk(v))
+	out, err := json.Marshal(r.walk(v))
+	if err != nil {
+		return b, nil
+	}
+	return out, nil
 }
 
-// String redacts PEM blocks and Bearer tokens in s.
+// String redacts s the way the repos redact a reason or ticket.
+// PEM, when set, replaces the whole string. BearerPrefix, when set,
+// replaces the whole string when it starts with "bearer ". ColonLines,
+// when set, blanks secret lines. The zero value returns s unchanged.
 func (r Redactor) String(s string) string {
-	return r.redactString(s)
+	if s == "" {
+		return s
+	}
+	if r.BearerPrefix && strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "bearer ") {
+		return redacted
+	}
+	if r.PEM && containsPrivateKey(s) {
+		return redacted
+	}
+	if r.ColonLines && len(r.Keys) > 0 {
+		return r.blankColonLines(s)
+	}
+	return s
+}
+
+// Path reports whether path names a secret field: it equals a key in Keys,
+// or it ends in "."+key or "/"+key, compared case-insensitively.
+// Every template repo uses this on a diff entry's path and then replaces
+// both sides with the JSON string "[redacted]". A nil Keys reports false.
+func (r Redactor) Path(path string) bool {
+	if len(r.Keys) == 0 || path == "" {
+		return false
+	}
+	p := strings.ToLower(path)
+	for key, ok := range r.Keys {
+		if !ok {
+			continue
+		}
+		if p == key || strings.HasSuffix(p, "."+key) || strings.HasSuffix(p, "/"+key) {
+			return true
+		}
+	}
+	return false
+}
+
+// Value redacts one JSON value the way JSON does, then replaces it with the
+// JSON string "[redacted]" when Path(path) is true.
+func (r Redactor) Value(path string, b []byte) ([]byte, error) {
+	if r.Path(path) {
+		return []byte(`"` + redacted + `"`), nil
+	}
+	return r.JSON(b)
 }
 
 func (r Redactor) walk(v any) any {
@@ -304,7 +378,7 @@ func (r Redactor) walk(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, child := range t {
-			if r.Keys[k] {
+			if r.secretKey(k) {
 				out[k] = redacted
 				continue
 			}
@@ -318,20 +392,43 @@ func (r Redactor) walk(v any) any {
 		}
 		return out
 	case string:
-		return r.redactString(t)
+		if r.PEM && containsPrivateKey(t) {
+			return redacted
+		}
+		return t
 	default:
 		return v
 	}
 }
 
-func (r Redactor) redactString(s string) string {
-	if r.PEM {
-		s = pemRE.ReplaceAllString(s, redacted)
+func (r Redactor) secretKey(k string) bool {
+	if len(r.Keys) == 0 {
+		return false
 	}
-	if r.BearerPrefix {
-		s = bearerRE.ReplaceAllString(s, "Bearer "+redacted)
+	return r.Keys[strings.ToLower(k)]
+}
+
+func (r Redactor) blankColonLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lower := strings.ToLower(line)
+		for key, ok := range r.Keys {
+			if !ok {
+				continue
+			}
+			if strings.Contains(lower, key+":") {
+				if idx := strings.Index(line, ":"); idx >= 0 {
+					lines[i] = line[:idx+1] + " " + redacted
+					break
+				}
+			}
+		}
 	}
-	return s
+	return strings.Join(lines, "\n")
+}
+
+func containsPrivateKey(s string) bool {
+	return strings.Contains(s, "BEGIN ") && strings.Contains(s, "PRIVATE")
 }
 
 // DeniedEvent is one authorization denial, before a repo maps it into its own row.
