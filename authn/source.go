@@ -25,7 +25,10 @@ type RawToken struct {
 }
 
 // BasicSpec is the optional HTTP Basic credential.
-// It is not subject to MinSecretBytes. An empty password is a load error.
+// It is not subject to MinSecretBytes. An empty password is a load error
+// only when a password was read and its length is 0. A password file with
+// no usable line is unresolved_reference ("basic password file does not
+// resolve: <path>"), which is also the result for a missing file.
 // Nil Basic on Config means Basic is off.
 // PasswordFile, when set together with a non-empty username, is opened by
 // Load and Prepare through Opts. An in-memory Password is used when
@@ -377,8 +380,10 @@ func parseDNSBody(raw []byte) ([]RawToken, error) {
 }
 
 // readPassword opens a Basic password file and records every candidate.
-// The caller has already copied BasicSpec. A read failure names the file.
-// A file with no usable secret is an empty password.
+// The caller has already copied BasicSpec. A read failure, including
+// os.ErrInvalid for a blank or comment-only file, names the file as
+// unresolved. The empty-password error is only for a successful read
+// whose secret length is 0.
 func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 	if b == nil {
 		return nil, Secret{}, os.ErrInvalid
@@ -418,10 +423,10 @@ func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 		return out, picked, nil
 	}
 	field := joinField(prefix, "basic.passwordFile")
-	if firstErr == nil || errors.Is(firstErr, os.ErrInvalid) {
+	if firstErr == nil {
 		return out, Secret{}, &LoadError{
 			Kind: kerr.Invalid, Code: "required", TokenIndex: -1, Field: field, File: b.PasswordFile,
-			Err: firstErr, Msg: "basic password is empty",
+			Msg: "basic password is empty",
 		}
 	}
 	return out, Secret{}, &LoadError{

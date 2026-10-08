@@ -643,6 +643,60 @@ func TestZeroTokensRefuseListen(t *testing.T) {
 	}
 }
 
+func TestBlankPasswordFileDoesNotResolve(t *testing.T) {
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "tok")
+	if err := os.WriteFile(tok, []byte(strings.Repeat("t", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	line := FileOpts{Line: FirstNonCommentLine, Resolve: AsGiven}
+	cases := []struct {
+		name  string
+		body  string
+		write bool
+		cause error
+	}{
+		{name: "blank", body: "\n", write: true, cause: os.ErrInvalid},
+		{name: "comment-only", body: "# keep\n\n  \n# out\n", write: true, cause: os.ErrInvalid},
+		{name: "missing", write: false, cause: os.ErrNotExist},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pw := filepath.Join(dir, tc.name+".pass")
+			if tc.write {
+				if err := os.WriteFile(pw, []byte(tc.body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := Load(Config{
+				Mode: ModeBearerAndBasic, Duplicates: RejectDuplicateValue, MinSecretBytes: 32,
+				PathPrefix: "spec.management.auth",
+				Source:     PerTokenFiles([]FileToken{{ID: "ops", Role: "administrator", SecretFile: tok}}, line),
+				Basic:      &BasicSpec{Username: "ada", PasswordFile: pw, TokenRef: "ops", Opts: line},
+			})
+			le := mustAs(t, err)
+			want := "basic password file does not resolve: " + pw
+			if le.Code != "unresolved_reference" || le.Error() != want || !errors.Is(le.Err, tc.cause) {
+				t.Fatalf("got %+v", le)
+			}
+		})
+	}
+
+	pw := filepath.Join(dir, "trim.pass")
+	if err := os.WriteFile(pw, []byte(" \n\t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(Config{
+		Mode: ModeBearerAndBasic, Duplicates: RejectDuplicateValue, MinSecretBytes: 32,
+		Source: PerTokenFiles([]FileToken{{ID: "ops", Role: "administrator", SecretFile: tok}}, line),
+		Basic:  &BasicSpec{Username: "ada", PasswordFile: pw, TokenRef: "ops", Opts: FileOpts{Line: WholeFileTrim, Resolve: AsGiven}},
+	})
+	le := mustAs(t, err)
+	if le.Code != "required" || le.Error() != "basic password is empty" {
+		t.Fatalf("trimmed empty: %+v", le)
+	}
+}
+
 func TestBearerAndBasicSamePrincipal(t *testing.T) {
 	token := strings.Repeat("t", 32)
 	pass := "shortpw"
