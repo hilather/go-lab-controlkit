@@ -269,7 +269,8 @@ func (s *memSource) Spec() any {
 // DNSBundle loads dns's in-memory tokens and then secretRef.
 // secretRef may be one token line (role administrator), {"tokens":[...]}, or a
 // bare JSON array. In-memory tokens come first. An empty secretRef loads only
-// the in-memory tokens. o is the reader policy for secretRef.
+// the in-memory tokens. With TrimRef set, a secretRef that trims to empty does
+// the same and does not require file options. o is the reader policy for secretRef.
 func DNSBundle(inMemory []RawToken, secretRef string, o FileOpts) TokenSource {
 	return &dnsSource{mem: Memory(inMemory).(*memSource), ref: secretRef, opts: o}
 }
@@ -294,7 +295,7 @@ func (s *dnsSource) Read() ([]RawToken, []FileResult, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if s.ref == "" {
+	if applyRef(s.ref, s.opts) == "" {
 		return toks, nil, nil
 	}
 	if err := validateOpts(s.opts); err != nil {
@@ -382,7 +383,9 @@ func parseDNSBody(raw []byte) ([]RawToken, error) {
 // readPassword opens a Basic password file and records every candidate.
 // The caller has already copied BasicSpec. A read failure, including
 // os.ErrInvalid for a blank or comment-only FirstNonCommentLine file,
-// names the file as unresolved. A successful read is the picked candidate
+// names the file as unresolved. A TrimRef password path that trims to empty
+// is not opened and uses that same sentence with os.ErrNotExist.
+// A successful read is the picked candidate
 // even when its length is 0, including a WholeFileTrim of empty or
 // whitespace bytes on any candidate. That pick is terminal: a later
 // candidate's error does not replace it, and a length of 0 is
@@ -392,6 +395,14 @@ func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 		return nil, Secret{}, os.ErrInvalid
 	}
 	cands := candidatePaths(b.PasswordFile, b.Opts)
+	field := joinField(prefix, "basic.passwordFile")
+	if len(cands) == 0 {
+		return nil, Secret{}, &LoadError{
+			Kind: kerr.Invalid, Code: "unresolved_reference", TokenIndex: -1,
+			Field: field, File: b.PasswordFile, Err: os.ErrNotExist,
+			Msg: "basic password file does not resolve: " + b.PasswordFile,
+		}
+	}
 	var out []FileResult
 	var picked Secret
 	var pickedOK bool
@@ -426,7 +437,6 @@ func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 			break
 		}
 	}
-	field := joinField(prefix, "basic.passwordFile")
 	if pickedOK {
 		if picked.Len() == 0 {
 			picked.Zero()

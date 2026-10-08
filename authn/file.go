@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/hilather/go-lab-controlkit/kerr"
@@ -50,16 +51,24 @@ const (
 // Harden true opens with O_NONBLOCK, allows only regular files, and refuses
 // a file larger than 1 MiB. Symlinks are followed. The regular-file check
 // applies to the target.
+// TrimRef false, the zero value, uses the ref exactly as written. With Harden
+// false and AsGiven, that read is os.ReadFile of the ref. True trims first.
 type FileOpts struct {
 	Line        LineMode
 	Resolve     PathMode
 	BaseDir     string
 	SkipMissing bool
 	Harden      bool
+	// TrimRef false uses the ref exactly as written (ntp, netconf, maildev,
+	// syslog). True applies strings.TrimSpace before the absolute check, the
+	// base-dir join, and the open (snmp, dns). A ref that trims to empty is
+	// os.ErrNotExist and is not opened. A DNSBundle secretRef that trims to
+	// empty loads only the in-memory tokens.
+	TrimRef bool
 }
 
 // ReadFile reads the raw bytes of the file the loader would pick for path,
-// using o's resolve, line, and harden rules. The returned buffer is the
+// using o's resolve, line, harden, and trim rules. The returned buffer is the
 // file's raw bytes; the caller zeroes it. Line mode chooses the candidate,
 // not the returned bytes.
 // For CWDThenBaseDir the first candidate that yields a secret is returned.
@@ -108,16 +117,20 @@ func ReadFile(path string, o FileOpts) ([]byte, error) {
 
 // UsableLineLen returns the byte length of the first usable line of the file
 // at path: the first line that is not blank and does not start with '#',
-// trimmed. It reads through the same reader as token loading, with o's Resolve
-// and Harden rules, and zeroes the line before returning. A file with no
+// trimmed. It reads through the same reader as token loading, with o's Resolve,
+// Harden, and TrimRef rules, and zeroes the line before returning. A file with no
 // usable line returns os.ErrInvalid. CWDThenBaseDir uses the first candidate
 // that has a usable line.
 func UsableLineLen(path string, o FileOpts) (int, error) {
 	if err := validateOpts(o); err != nil {
 		return 0, err
 	}
+	cands := candidatePaths(path, o)
+	if len(cands) == 0 {
+		return 0, os.ErrNotExist
+	}
 	var first error
-	for _, c := range candidatePaths(path, o) {
+	for _, c := range cands {
 		b, err := readOne(c.path, o.Harden)
 		if err != nil {
 			zero(b)
@@ -167,9 +180,13 @@ type candidate struct {
 }
 
 func candidatePaths(ref string, o FileOpts) []candidate {
-	ref = trimPath(ref)
-	if ref == "" {
-		return []candidate{{path: ref, resolver: "as-given"}}
+	ref = applyRef(ref, o)
+	if ref == "" && o.TrimRef {
+		// snmp trims, then returns os.ErrNotExist without opening.
+		// dns treats a secretRef that trims to empty as absent.
+		// TrimRef false falls through, so an empty ref is still opened,
+		// and a relative one is still joined (syslog).
+		return nil
 	}
 	joined := ""
 	if o.BaseDir != "" && !filepath.IsAbs(ref) {
@@ -201,8 +218,13 @@ func candidatePaths(ref string, o FileOpts) []candidate {
 	}
 }
 
-func trimPath(p string) string {
-	return string(bytes.TrimSpace([]byte(p)))
+// applyRef is the ref used for IsAbs, base-dir joins, and the open.
+// TrimRef false returns ref unchanged.
+func applyRef(ref string, o FileOpts) string {
+	if o.TrimRef {
+		return strings.TrimSpace(ref)
+	}
+	return ref
 }
 
 func readOne(path string, harden bool) ([]byte, error) {

@@ -148,7 +148,7 @@ func validateSources(cfg Config) error {
 			return err
 		}
 	case *dnsSource:
-		if s.ref != "" {
+		if applyRef(s.ref, s.opts) != "" {
 			if err := validateOpts(s.opts); err != nil {
 				return err
 			}
