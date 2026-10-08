@@ -503,10 +503,20 @@ func (s *Store) Bind(v *authn.Verifier) (unregister func(), err error) {
 	}
 	unhook := v.OnIdentityChange(func() { s.Clear() })
 	s.mu.Lock()
-	s.verifier = v
-	s.unhook = unhook
-	s.bindID = id
+	// Install only while this Bind is still the latest. A concurrent Bind
+	// may already have incremented bindID. Writing it back would point the
+	// generation check at a verifier whose Clear hook is not the registered one.
+	install := id >= s.bindID
+	if install {
+		s.verifier = v
+		s.unhook = unhook
+		s.bindID = id
+	}
 	s.mu.Unlock()
+	if !install {
+		unhook()
+		return func() {}, nil
+	}
 	return func() {
 		unhook()
 		s.mu.Lock()

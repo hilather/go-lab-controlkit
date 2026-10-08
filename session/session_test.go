@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -466,6 +467,64 @@ func TestSessionBindClearsOnSwap(t *testing.T) {
 	}
 	if _, ok := s.Lookup(iss.Cookie); ok || s.Len() != 0 {
 		t.Fatal("identity swap left a session")
+	}
+}
+
+func TestConcurrentBindDoesNotRewind(t *testing.T) {
+	s := mustStore(t, baseCfg())
+	v1 := mustVer(t, mustMat(t, "alpha"))
+	v2 := mustVer(t, mustMat(t, "bravo"))
+	const n = 64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	errCh := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			v := v1
+			if i%2 == 1 {
+				v = v2
+			}
+			if _, err := s.Bind(v); err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	if s.bindID != n {
+		id := s.bindID
+		s.mu.Unlock()
+		t.Fatalf("bindID %d want %d", id, n)
+	}
+	live := s.verifier
+	s.mu.Unlock()
+	if live != v1 && live != v2 {
+		t.Fatalf("verifier %p", live)
+	}
+	other := v1
+	if live == v1 {
+		other = v2
+	}
+	iss, err := s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !other.Swap(mustMat(t, "other")) {
+		t.Fatal("other swap did not change identity")
+	}
+	if _, ok := s.Lookup(iss.Cookie); !ok {
+		t.Fatal("another verifier's hook cleared the session")
+	}
+	if !live.Swap(mustMat(t, "live")) {
+		t.Fatal("live swap did not change identity")
+	}
+	if _, ok := s.Lookup(iss.Cookie); ok || s.Len() != 0 {
+		t.Fatal("installed verifier did not clear the session")
 	}
 }
 
