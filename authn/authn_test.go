@@ -749,6 +749,69 @@ func TestBlankPasswordFileDoesNotResolve(t *testing.T) {
 	}
 }
 
+func TestEmptyPasswordReadBeatsLaterCandidate(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	base := filepath.Join(root, "base")
+	if err := os.Mkdir(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tok := filepath.Join(root, "tok")
+	if err := os.WriteFile(tok, []byte(strings.Repeat("t", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokenOpts := FileOpts{Line: FirstNonCommentLine, Resolve: AsGiven}
+	loadPass := func(t *testing.T, ref string, opts FileOpts) error {
+		t.Helper()
+		_, err := Load(Config{
+			Mode: ModeBearerAndBasic, Duplicates: RejectDuplicateValue, MinSecretBytes: 32,
+			Source: PerTokenFiles([]FileToken{{ID: "ops", Role: "administrator", SecretFile: tok}}, tokenOpts),
+			Basic:  &BasicSpec{Username: "ada", PasswordFile: ref, TokenRef: "ops", Opts: opts},
+		})
+		return err
+	}
+
+	// Whitespace in the working directory, and the base-dir file is missing.
+	if err := os.WriteFile(filepath.Join(root, "pass"), []byte(" \t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		resolve PathMode
+	}{
+		{name: "cwd-then-base", resolve: CWDThenBaseDir},
+		{name: "as-given-and-base", resolve: AsGivenAndBaseDir},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := loadPass(t, "pass", FileOpts{Line: WholeFileTrim, Resolve: tc.resolve, BaseDir: base})
+			le := mustAs(t, err)
+			if le.Code != "required" || le.Error() != "basic password is empty" {
+				t.Fatalf("%+v", le)
+			}
+		})
+	}
+
+	// The empty read can be a later candidate. The missing cwd file must not win.
+	if err := os.WriteFile(filepath.Join(base, "later"), []byte(" \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := loadPass(t, "later", FileOpts{Line: WholeFileTrim, Resolve: CWDThenBaseDir, BaseDir: base})
+	le := mustAs(t, err)
+	if le.Code != "required" || le.Error() != "basic password is empty" {
+		t.Fatalf("base candidate: %+v", le)
+	}
+
+	// A blank or comment-only FirstNonCommentLine file stays unresolved.
+	if err := os.WriteFile(filepath.Join(root, "notes"), []byte("# keep\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = loadPass(t, "notes", FileOpts{Line: FirstNonCommentLine, Resolve: CWDThenBaseDir, BaseDir: base})
+	le = mustAs(t, err)
+	if le.Code != "unresolved_reference" || le.Error() != "basic password file does not resolve: notes" {
+		t.Fatalf("comment-only: %+v", le)
+	}
+}
+
 func TestBearerAndBasicSamePrincipal(t *testing.T) {
 	token := strings.Repeat("t", 32)
 	pass := "shortpw"

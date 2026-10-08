@@ -381,9 +381,12 @@ func parseDNSBody(raw []byte) ([]RawToken, error) {
 
 // readPassword opens a Basic password file and records every candidate.
 // The caller has already copied BasicSpec. A read failure, including
-// os.ErrInvalid for a blank or comment-only file, names the file as
-// unresolved. The empty-password error is only for a successful read
-// whose secret length is 0.
+// os.ErrInvalid for a blank or comment-only FirstNonCommentLine file,
+// names the file as unresolved. A successful read is the picked candidate
+// even when its length is 0, including a WholeFileTrim of empty or
+// whitespace bytes on any candidate. That pick is terminal: a later
+// candidate's error does not replace it, and a length of 0 is
+// "basic password is empty".
 func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 	if b == nil {
 		return nil, Secret{}, os.ErrInvalid
@@ -402,7 +405,11 @@ func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 			sec, serr = secretBytes(raw, b.Opts.Line)
 		}
 		zero(raw)
-		if !pickedOK && serr == nil && len(sec) > 0 {
+		loaderCandidate := b.Opts.Resolve != AsGivenAndBaseDir || c.resolver == "as-given"
+		// A successful read is picked even when the secret is empty, so a
+		// later candidate cannot replace "basic password is empty".
+		// FirstNonCommentLine with no usable line sets serr and is not a secret.
+		if !pickedOK && loaderCandidate && fr.ReadErr == nil && serr == nil {
 			fr.Picked = true
 			pickedOK = true
 			picked = NewSecret(sec)
@@ -419,10 +426,17 @@ func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 			break
 		}
 	}
+	field := joinField(prefix, "basic.passwordFile")
 	if pickedOK {
+		if picked.Len() == 0 {
+			picked.Zero()
+			return out, Secret{}, &LoadError{
+				Kind: kerr.Invalid, Code: "required", TokenIndex: -1, Field: field, File: b.PasswordFile,
+				Msg: "basic password is empty",
+			}
+		}
 		return out, picked, nil
 	}
-	field := joinField(prefix, "basic.passwordFile")
 	if firstErr == nil {
 		return out, Secret{}, &LoadError{
 			Kind: kerr.Invalid, Code: "required", TokenIndex: -1, Field: field, File: b.PasswordFile,
