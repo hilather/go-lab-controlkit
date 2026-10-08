@@ -53,7 +53,8 @@ type Ctor struct {
 }
 
 // Live is the policy SetRate applies to a later rate update.
-// A disabled limiter ignores SetRate. Both fields are required.
+// A disabled limiter ignores a valid SetRate. Both fields are required.
+// A zero Live, or any field that is not a known BurstMeaning, is an error.
 type Live struct {
 	Rate  BurstMeaning
 	Burst BurstMeaning
@@ -221,23 +222,28 @@ func (k *Keyed) Allow(key string) bool {
 	return true
 }
 
-// SetRate updates the live rate and burst. It does nothing on a disabled limiter.
-// A Live field that is not a known BurstMeaning leaves that dimension unchanged.
-func (k *Keyed) SetRate(rate, burst float64, l Live) {
+// SetRate updates the live rate and burst.
+// It returns an error on a nil limiter or when either Live field is not a
+// known BurstMeaning. A zero Live used to leave the rate unchanged.
+// A disabled limiter ignores a valid update and returns nil.
+func (k *Keyed) SetRate(rate, burst float64, l Live) error {
 	if k == nil {
-		return
+		return errors.New("ratelimit: nil limiter")
+	}
+	if l.Rate != BurstDefaultOnNonPositive && l.Rate != BurstDefaultOnZero {
+		return errors.New("ratelimit: live rate meaning is required")
+	}
+	if l.Burst != BurstDefaultOnNonPositive && l.Burst != BurstDefaultOnZero {
+		return errors.New("ratelimit: live burst meaning is required")
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.disabled {
-		return
+		return nil
 	}
-	if l.Rate == BurstDefaultOnNonPositive || l.Rate == BurstDefaultOnZero {
-		k.rate = applyLive(rate, l.Rate, k.defRate)
-	}
-	if l.Burst == BurstDefaultOnNonPositive || l.Burst == BurstDefaultOnZero {
-		k.burst = applyLive(burst, l.Burst, k.defBurst)
-	}
+	k.rate = applyLive(rate, l.Rate, k.defRate)
+	k.burst = applyLive(burst, l.Burst, k.defBurst)
+	return nil
 }
 
 func applyLive(v float64, meaning BurstMeaning, def float64) float64 {

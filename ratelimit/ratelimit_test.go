@@ -57,9 +57,14 @@ func TestCtorRows(t *testing.T) {
 			t.Fatal("negative rate disables")
 		}
 	}
-	k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive})
+	if err = k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
 	if !k.Allow("b") {
 		t.Fatal("setRate on a disabled limiter must be a no-op")
+	}
+	if err = k.SetRate(1, 1, Live{}); err == nil {
+		t.Fatal("zero Live on a disabled limiter")
 	}
 
 	k, err = NewKeyed(0, -5, ctorDNSRaw(), opts(8, clock))
@@ -110,7 +115,9 @@ func TestSetRateLive(t *testing.T) {
 	if k.Allow("a") {
 		t.Fatal("burst 1 exhausted")
 	}
-	k.SetRate(0, 0, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive})
+	if err = k.SetRate(0, 0, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
 	now = now.Add(time.Second)
 	if !k.Allow("a") {
 		t.Fatal("non-positive setRate uses defaults and refills")
@@ -128,7 +135,9 @@ func TestSetRateClampsAtSameTimestamp(t *testing.T) {
 	}
 	// Balance is 9. Cutting burst to 1 at this same timestamp must clamp
 	// before the next spend, or the call still spends the old balance.
-	k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive})
+	if err = k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
 	if !k.Allow("a") {
 		t.Fatal("clamped burst should still allow one")
 	}
@@ -153,6 +162,36 @@ func TestBackwardClockBurnsTokens(t *testing.T) {
 	}
 }
 
+func TestSetRateRejectsZeroLive(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(5, 5, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = k.SetRate(1, 1, Live{}); err == nil {
+		t.Fatal("zero Live")
+	}
+	if err = k.SetRate(1, 1, Live{Rate: BurstDefaultOnZero}); err == nil {
+		t.Fatal("zero burst meaning")
+	}
+	if !k.Allow("a") {
+		t.Fatal("rejected SetRate changed the bucket")
+	}
+	// burst 5, one spent, four left. A rejected update must leave them.
+	for i := 0; i < 4; i++ {
+		if !k.Allow("a") {
+			t.Fatalf("balance changed at %d", i)
+		}
+	}
+	if k.Allow("a") {
+		t.Fatal("burst grew")
+	}
+	var nilKeyed *Keyed
+	if err = nilKeyed.SetRate(1, 1, Live{Rate: BurstDefaultOnZero, Burst: BurstDefaultOnZero}); err == nil {
+		t.Fatal("nil limiter")
+	}
+}
+
 func TestIdleCutoffFollowsSetRate(t *testing.T) {
 	var now time.Time
 	clock := func() time.Time { return now }
@@ -173,7 +212,9 @@ func TestIdleCutoffFollowsSetRate(t *testing.T) {
 	}
 	// Recompute: rate 100 / burst 1 => cutoff = 30s floor, gap = 7.5s.
 	// A SetRate that did not take effect would still use the 400s cutoff.
-	k.SetRate(100, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive})
+	if err = k.SetRate(100, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
 	now = now.Add(31 * time.Second)
 	if !k.Allow("third") {
 		t.Fatal("third")
