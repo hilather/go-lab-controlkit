@@ -103,6 +103,29 @@ func TestCheckOpenValidator(t *testing.T) {
 	}
 }
 
+func TestCheckNestingDepth(t *testing.T) {
+	if err := Check(nestedArrays(10000), Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{10001, 1000000} {
+		err := Check(nestedArrays(n), Spec{})
+		if err == nil || !kindIs(err, kerr.Invalid) || !strings.Contains(err.Error(), "mcpstrict: invalid json") {
+			t.Fatalf("depth %d: %v", n, err)
+		}
+	}
+}
+
+func nestedArrays(n int) json.RawMessage {
+	b := make([]byte, 0, n*2)
+	for i := 0; i < n; i++ {
+		b = append(b, '[')
+	}
+	for i := 0; i < n; i++ {
+		b = append(b, ']')
+	}
+	return b
+}
+
 func kindIs(err error, k kerr.Kind) bool {
 	got, ok := kerr.KindOf(err)
 	return ok && got == k

@@ -41,7 +41,7 @@ func Check(raw json.RawMessage, spec Spec) error {
 	}
 	p := parser{b: raw}
 	raws := make(map[string]json.RawMessage)
-	if err := p.parseValue("", raws); err != nil {
+	if err := p.parseValue("", raws, 1); err != nil {
 		return err
 	}
 	p.skipWS()
@@ -197,12 +197,19 @@ func invalid(msg string) error {
 	return kerr.New(kerr.Invalid, msg)
 }
 
+// maxNestingDepth matches encoding/json. Deeper input is rejected before
+// the parser recurses, so it returns an error instead of overflowing the stack.
+const maxNestingDepth = 10000
+
 type parser struct {
 	b []byte
 	i int
 }
 
-func (p *parser) parseValue(path string, raws map[string]json.RawMessage) error {
+func (p *parser) parseValue(path string, raws map[string]json.RawMessage, depth int) error {
+	if depth > maxNestingDepth {
+		return invalid("mcpstrict: invalid json")
+	}
 	p.skipWS()
 	if p.i >= len(p.b) {
 		return invalid("mcpstrict: unexpected end")
@@ -211,9 +218,9 @@ func (p *parser) parseValue(path string, raws map[string]json.RawMessage) error 
 	var err error
 	switch p.b[p.i] {
 	case '{':
-		err = p.parseObject(path, raws)
+		err = p.parseObject(path, raws, depth)
 	case '[':
-		err = p.parseArray(path, raws)
+		err = p.parseArray(path, raws, depth)
 	case '"':
 		_, err = p.parseString()
 	case 't':
@@ -232,7 +239,7 @@ func (p *parser) parseValue(path string, raws map[string]json.RawMessage) error 
 	return nil
 }
 
-func (p *parser) parseObject(path string, raws map[string]json.RawMessage) error {
+func (p *parser) parseObject(path string, raws map[string]json.RawMessage, depth int) error {
 	p.i++
 	p.skipWS()
 	if p.eat('}') {
@@ -256,7 +263,7 @@ func (p *parser) parseObject(path string, raws map[string]json.RawMessage) error
 		if !p.eat(':') {
 			return invalid("mcpstrict: missing colon at " + displayPath(path))
 		}
-		if err := p.parseValue(join(path, key), raws); err != nil {
+		if err := p.parseValue(join(path, key), raws, depth+1); err != nil {
 			return err
 		}
 		p.skipWS()
@@ -269,14 +276,14 @@ func (p *parser) parseObject(path string, raws map[string]json.RawMessage) error
 	}
 }
 
-func (p *parser) parseArray(path string, raws map[string]json.RawMessage) error {
+func (p *parser) parseArray(path string, raws map[string]json.RawMessage, depth int) error {
 	p.i++
 	p.skipWS()
 	if p.eat(']') {
 		return nil
 	}
 	for i := 0; ; i++ {
-		if err := p.parseValue(join(path, strconv.Itoa(i)), raws); err != nil {
+		if err := p.parseValue(join(path, strconv.Itoa(i)), raws, depth+1); err != nil {
 			return err
 		}
 		p.skipWS()
