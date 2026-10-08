@@ -88,12 +88,16 @@ type ApplyDriver interface {
 	SessionWorks(ctx context.Context) bool
 }
 
-// LoadOnceDriver counts secret-file reads for one reset.
+// LoadOnceDriver counts secret-file opens for one reset.
 // Variants are omit-mode, listen-override, management-off, and
 // unreadable-between.
+// Files is the set of secret files that variant opens.
+// Reset returns how many times each path was opened. A file opened twice
+// fails the suite even when the total equals the size of Files.
 type LoadOnceDriver interface {
 	Variants() []string
-	Reset(ctx context.Context, variant string) (reads int, ok bool)
+	Files(variant string) []string
+	Reset(ctx context.Context, variant string) (opens map[string]int, ok bool)
 }
 
 // RaceResult is one Prepare race case.
@@ -113,16 +117,27 @@ type PrepareRaceDriver interface {
 }
 
 // BootResult is one boot attempt.
+// Opens is the open count for each secret path. Nil and an empty map
+// both mean nothing was opened.
 type BootResult struct {
 	Booted      bool
 	DataPlaneOK bool
-	SecretOpens int
+	Opens       map[string]int
 	Message     string
 }
 
 // BootDriver boots with management off or bound.
 // arm is off or bound. files is absent, short, or mode000.
+// Files is the set that arm must open exactly once. The off arm returns
+// nil when management-off opens nothing. It returns the pin's token files
+// when that boot builds a stdio pin and therefore Prepares; only those
+// files may be opened, once each. The bound arm returns every secret file
+// that boot opens, including token files and maildev's password file.
+// BoundMessage is the consumer's characterization of the bound-arm failure
+// for that files shape. The suite compares Boot's Message to it byte for byte.
 type BootDriver interface {
+	Files(arm, files string) []string
+	BoundMessage(files string) string
 	Boot(ctx context.Context, arm, files string) BootResult
 }
 

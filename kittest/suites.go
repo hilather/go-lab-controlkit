@@ -57,6 +57,26 @@ func demotionOK(startup, demoted []string) bool {
 	return dropped && kept
 }
 
+// onceEach reports whether opens records exactly one open for each path
+// in files and no other path. A zero count fails, including when another
+// path was opened twice so the total still equals len(files).
+func onceEach(files []string, opens map[string]int) bool {
+	seen := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		if f == "" {
+			return false
+		}
+		if _, dup := seen[f]; dup {
+			return false
+		}
+		seen[f] = struct{}{}
+		if opens[f] != 1 {
+			return false
+		}
+	}
+	return len(opens) == len(seen)
+}
+
 // StdioRotation checks a token pin across demotion, rotation, removal,
 // restore, and a rejected reset, then the maildev dev-loopback arm when
 // the driver has one. Scope ids and the unauthenticated wire code come
@@ -208,7 +228,7 @@ func ApplyNoSecretRead(t Testing, d ApplyDriver) {
 	}
 }
 
-// ResetLoadOnce checks exactly one secret read per reset variant.
+// ResetLoadOnce checks one open of each secret file per reset variant.
 func ResetLoadOnce(t Testing, d LoadOnceDriver) {
 	t.Helper()
 	ctx := context.Background()
@@ -217,9 +237,13 @@ func ResetLoadOnce(t Testing, d LoadOnceDriver) {
 		t.Fatalf("variants %v", d.Variants())
 	}
 	for _, variant := range want {
-		reads, ok := d.Reset(ctx, variant)
-		if reads != 1 || !ok {
-			t.Fatalf("%s reads %d ok %v", variant, reads, ok)
+		files := d.Files(variant)
+		if len(files) == 0 {
+			t.Fatalf("%s: no secret files", variant)
+		}
+		opens, ok := d.Reset(ctx, variant)
+		if !ok || !onceEach(files, opens) {
+			t.Fatalf("%s opens %v files %v ok %v", variant, opens, files, ok)
 		}
 	}
 }
@@ -242,19 +266,31 @@ func ResetPrepareRace(t Testing, d PrepareRaceDriver) {
 	}
 }
 
-// BootManagementOffNoSecretRead checks management-off boots with zero secret
-// opens, and management-bound boots fail after one open.
+// BootManagementOffNoSecretRead checks management-off and management-bound
+// boots. The off arm opens exactly the file set the driver declares: none,
+// or the stdio pin's token files once each when that boot Prepares. The
+// bound arm opens each declared secret file once and fails with the
+// driver's characterization of today's boot message.
 func BootManagementOffNoSecretRead(t Testing, d BootDriver) {
 	t.Helper()
 	ctx := context.Background()
 	for _, files := range []string{"absent", "short", "mode000"} {
+		offFiles := d.Files("off", files)
 		off := d.Boot(ctx, "off", files)
-		if !off.Booted || !off.DataPlaneOK || off.SecretOpens != 0 {
-			t.Fatalf("off %s: %+v", files, off)
+		if !off.Booted || !off.DataPlaneOK || !onceEach(offFiles, off.Opens) {
+			t.Fatalf("off %s: %+v files %v", files, off, offFiles)
+		}
+		boundFiles := d.Files("bound", files)
+		if len(boundFiles) == 0 {
+			t.Fatalf("bound %s: no secret files", files)
+		}
+		wantMsg := d.BoundMessage(files)
+		if wantMsg == "" {
+			t.Fatalf("bound %s: expected message is empty", files)
 		}
 		bound := d.Boot(ctx, "bound", files)
-		if bound.Booted || bound.Message == "" || bound.SecretOpens != 1 {
-			t.Fatalf("bound %s: %+v", files, bound)
+		if bound.Booted || bound.Message != wantMsg || !onceEach(boundFiles, bound.Opens) {
+			t.Fatalf("bound %s: %+v want message %q files %v", files, bound, wantMsg, boundFiles)
 		}
 	}
 }

@@ -52,14 +52,19 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(false)) }, []func(Testing){
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(true)) },
 		}},
-		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(false)) }, []func(Testing){
-			func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(true)) },
+		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(t, false)) }, []func(Testing){
+			func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(nil, true)) },
 		}},
 		{"ResetPrepareRace", func(t *testing.T) { ResetPrepareRace(t, newRace(t, false)) }, []func(Testing){
 			func(tb Testing) { ResetPrepareRace(tb, newRace(nil, true)) },
 		}},
-		{"BootManagementOffNoSecretRead", func(t *testing.T) { BootManagementOffNoSecretRead(t, newBoot(t, false)) }, []func(Testing){
-			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, true)) },
+		{"BootManagementOffNoSecretRead", func(t *testing.T) {
+			BootManagementOffNoSecretRead(t, newBoot(t, bootMulti, ""))
+			BootManagementOffNoSecretRead(t, newBoot(t, bootPin, ""))
+		}, []func(Testing){
+			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, bootMulti, "double")) },
+			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, bootMulti, "message")) },
+			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, bootPin, "off-zero")) },
 		}},
 		{"StreamRevocation", func(t *testing.T) { StreamRevocation(t, newStream("")) }, []func(Testing){
 			func(tb Testing) { StreamRevocation(tb, newStream("delete")) },
@@ -480,18 +485,39 @@ func hexOf(s string) string {
 	return fmt.Sprintf("%x", sum[:8])
 }
 
-type loadOnceRef struct{ bug bool }
+type loadOnceRef struct {
+	files []string
+	bug   bool
+}
 
-func newLoadOnce(bug bool) *loadOnceRef { return &loadOnceRef{bug: bug} }
+func newLoadOnce(t *testing.T, bug bool) *loadOnceRef {
+	dir := tdir(t)
+	return &loadOnceRef{files: []string{
+		filepath.Join(dir, "token-a"),
+		filepath.Join(dir, "token-b"),
+	}, bug: bug}
+}
 
 func (d *loadOnceRef) Variants() []string {
 	return []string{"omit-mode", "listen-override", "management-off", "unreadable-between"}
 }
 
-func (d *loadOnceRef) Reset(_ context.Context, variant string) (int, bool) {
-	n := 0
-	src := &countSrc{n: &n, id: "ada", sec: secretA}
-	cfg := authn.Config{Mode: authn.ModeBearer, Source: src, Duplicates: authn.RejectDuplicateValue, Roles: roleTable()}
+func (d *loadOnceRef) Files(string) []string {
+	return append([]string(nil), d.files...)
+}
+
+func (d *loadOnceRef) Reset(_ context.Context, variant string) (map[string]int, bool) {
+	restoreSecret(d.files[0], secretA+"\n")
+	restoreSecret(d.files[1], secretB+"\n")
+	opts := authn.FileOpts{Line: authn.FirstNonCommentLine, Resolve: authn.AsGiven}
+	src := authn.PerTokenFiles([]authn.FileToken{
+		{ID: "ada", Role: "administrator", SecretFile: d.files[0]},
+		{ID: "bea", Role: "administrator", SecretFile: d.files[1]},
+	}, opts)
+	cfg := authn.Config{
+		Mode: authn.ModeBearer, Source: src, Duplicates: authn.RejectDuplicateValue,
+		Roles: roleTable(), MinSecretBytes: 32,
+	}
 	switch variant {
 	case "listen-override":
 		cfg.Accept = authn.BearerNeedsToken(true)
@@ -499,16 +525,36 @@ func (d *loadOnceRef) Reset(_ context.Context, variant string) (int, bool) {
 		cfg.ManagementBound = false
 	}
 	st, err := authn.Prepare(cfg)
-	if err != nil || st.Err() != nil {
-		return n, false
+	opens := opensFrom(st)
+	if err != nil || st == nil || st.Err() != nil {
+		return opens, false
 	}
-	if !st.Commit(authn.Empty()) {
-		return n, false
+	if variant == "unreadable-between" {
+		for _, p := range d.files {
+			if err := sealUnreadable(p); err != nil {
+				return opens, false
+			}
+			if _, rerr := os.ReadFile(p); rerr == nil {
+				return opens, false
+			}
+		}
+	}
+	v := authn.Empty()
+	if !st.Commit(v) {
+		return opens, false
+	}
+	if _, err := v.AuthenticateBearer([]byte(secretA)); err != nil {
+		return opens, false
+	}
+	if _, err := v.AuthenticateBearer([]byte(secretB)); err != nil {
+		return opens, false
 	}
 	if d.bug && variant == "omit-mode" {
-		return n + 1, true
+		// Total still equals the file count. One file was opened twice.
+		opens[d.files[0]] = 2
+		opens[d.files[1]] = 0
 	}
-	return n, true
+	return opens, true
 }
 
 type raceRef struct {
@@ -574,49 +620,221 @@ func (d *raceRef) Case(_ context.Context, n int) RaceResult {
 	return RaceResult{Discarded: true, Reads: reads, CommittedNew: committed && err == nil, Field: "tokens[0].secretFile"}
 }
 
+type bootKind int
+
+const (
+	bootMulti bootKind = iota // token files plus a password file; off opens nothing
+	bootPin                   // management-off builds a stdio pin and Prepares
+)
+
 type bootRef struct {
-	dir string
-	bug bool
+	dir     string
+	kind    bootKind
+	bug     string
+	pin     string
+	tokens  map[string][]string
+	pass    map[string]string
+	wantMsg map[string]string
 }
 
-func newBoot(t *testing.T, bug bool) *bootRef { return &bootRef{dir: tdir(t), bug: bug} }
+func newBoot(t *testing.T, kind bootKind, bug string) *bootRef {
+	d := &bootRef{
+		dir: tdir(t), kind: kind, bug: bug,
+		tokens:  map[string][]string{},
+		pass:    map[string]string{},
+		wantMsg: map[string]string{},
+	}
+	if kind == bootPin {
+		d.pin = filepath.Join(d.dir, "pin-token")
+		writeFile(d.pin, secretA+"\n", 0600)
+	}
+	for _, shape := range []string{"absent", "short", "mode000"} {
+		sub := filepath.Join(d.dir, shape)
+		if err := os.MkdirAll(sub, 0700); err != nil {
+			panic(err)
+		}
+		a := filepath.Join(sub, "token-a")
+		b := filepath.Join(sub, "token-b")
+		d.tokens[shape] = []string{a, b}
+		switch shape {
+		case "short":
+			writeFile(a, "short\n", 0600)
+			writeFile(b, "tiny\n", 0600)
+		case "mode000":
+			sealMode000(a, secretA+"\n")
+			sealMode000(b, secretB+"\n")
+		}
+		if kind == bootMulti {
+			pw := filepath.Join(sub, "password")
+			d.pass[shape] = pw
+			switch shape {
+			case "short":
+				writeFile(pw, secretC+"\n", 0600)
+			case "mode000":
+				sealMode000(pw, secretC+"\n")
+			}
+		}
+		d.wantMsg[shape] = characterizeBoot(shape, a)
+	}
+	return d
+}
+
+func (d *bootRef) Files(arm, files string) []string {
+	if arm == "off" {
+		if d.kind == bootPin {
+			return []string{d.pin}
+		}
+		return nil
+	}
+	out := append([]string(nil), d.tokens[files]...)
+	if pw := d.pass[files]; pw != "" {
+		out = append(out, pw)
+	}
+	return out
+}
+
+func (d *bootRef) BoundMessage(files string) string { return d.wantMsg[files] }
 
 func (d *bootRef) Boot(_ context.Context, arm, files string) BootResult {
 	if arm == "off" {
-		if d.bug {
-			return BootResult{Booted: true, DataPlaneOK: true, SecretOpens: 1}
+		if d.kind == bootPin {
+			if d.bug == "off-zero" {
+				return BootResult{Booted: true, DataPlaneOK: true}
+			}
+			return d.bootPin()
 		}
 		if !authn.NotChecked().IsNotChecked() {
 			return BootResult{Message: "not-checked stage missing"}
 		}
-		return BootResult{Booted: true, DataPlaneOK: true, SecretOpens: 0}
+		return BootResult{Booted: true, DataPlaneOK: true}
 	}
-	path := filepath.Join(d.dir, arm+"-"+files)
-	switch files {
-	case "short":
-		writeFile(path, "short\n", 0600)
-	case "mode000":
-		writeFile(path, secretA+"\n", 0000)
-		if os.Geteuid() == 0 {
-			os.Remove(path)
-			os.Mkdir(path, 0700)
+	res := d.bootBound(files)
+	if d.bug == "double" {
+		paths := d.Files("bound", files)
+		res.Opens = map[string]int{}
+		for _, p := range paths {
+			res.Opens[p] = 1
 		}
+		// Two opens of the first file and zero of the second. The total
+		// still equals the file count.
+		res.Opens[paths[0]] = 2
+		res.Opens[paths[1]] = 0
 	}
-	reads := 0
-	src := &countSrc{n: &reads, inner: authn.PerTokenFiles([]authn.FileToken{{
-		ID: "ada", Role: "administrator", SecretFile: path,
-	}}, authn.FileOpts{Line: authn.FirstNonCommentLine, Resolve: authn.AsGiven})}
+	if d.bug == "message" {
+		res.Message = "boot failed"
+	}
+	return res
+}
+
+func (d *bootRef) bootPin() BootResult {
+	opts := fileOpts()
 	st, err := authn.Prepare(authn.Config{
-		Mode: authn.ModeBearer, Source: src, Duplicates: authn.RejectDuplicateValue,
-		Roles: roleTable(), MinSecretBytes: 32, ManagementBound: true,
+		Mode: authn.ModeBearer, Duplicates: authn.RejectDuplicateValue,
+		Roles: roleTable(), MinSecretBytes: 32, ManagementBound: false,
+		Source: authn.PerTokenFiles([]authn.FileToken{{
+			ID: "ada", Role: "administrator", SecretFile: d.pin,
+		}}, opts),
 	})
+	opens := opensFrom(st)
+	if err != nil || st == nil || st.Err() != nil {
+		return BootResult{Message: stageErr(err, st), Opens: opens}
+	}
+	v := authn.Empty()
+	if !st.Commit(v) {
+		return BootResult{Message: "pin commit failed", Opens: opens}
+	}
+	_, aerr := v.AuthenticateBearer([]byte(secretA))
+	return BootResult{Booted: true, DataPlaneOK: aerr == nil, Opens: opens}
+}
+
+func (d *bootRef) bootBound(files string) BootResult {
+	opts := fileOpts()
+	entries := make([]authn.FileToken, len(d.tokens[files]))
+	for i, p := range d.tokens[files] {
+		id := "ada"
+		if i > 0 {
+			id = "bea"
+		}
+		entries[i] = authn.FileToken{ID: id, Role: "administrator", SecretFile: p}
+	}
+	cfg := authn.Config{
+		Mode: authn.ModeBearer, Duplicates: authn.RejectDuplicateValue,
+		Roles: roleTable(), MinSecretBytes: 32, ManagementBound: true,
+		Source: authn.PerTokenFiles(entries, opts),
+	}
+	if pw := d.pass[files]; pw != "" {
+		cfg.Mode = authn.ModeBearerAndBasic
+		cfg.Basic = &authn.BasicSpec{Username: "ada", PasswordFile: pw, Opts: opts}
+	}
+	st, err := authn.Prepare(cfg)
+	opens := opensFrom(st)
+	if err != nil || st == nil || st.Err() != nil {
+		return BootResult{Message: stageErr(err, st), Opens: opens}
+	}
+	return BootResult{Booted: true, DataPlaneOK: true, Opens: opens}
+}
+
+func fileOpts() authn.FileOpts {
+	return authn.FileOpts{Line: authn.FirstNonCommentLine, Resolve: authn.AsGiven}
+}
+
+func opensFrom(st *authn.Staged) map[string]int {
+	if st == nil {
+		return nil
+	}
+	opens := map[string]int{}
+	for _, fr := range st.Files() {
+		opens[fr.Path]++
+	}
+	return opens
+}
+
+func stageErr(err error, st *authn.Staged) string {
 	if err != nil {
-		return BootResult{Message: err.Error(), SecretOpens: reads}
+		return err.Error()
 	}
-	if st.Err() != nil {
-		return BootResult{Message: st.Err().Error(), SecretOpens: reads}
+	if st != nil && st.Err() != nil {
+		return st.Err().Error()
 	}
-	return BootResult{Booted: true, DataPlaneOK: true, SecretOpens: reads}
+	return ""
+}
+
+func characterizeBoot(shape, path string) string {
+	if shape == "short" {
+		return fmt.Sprintf("secretFile %q trimmed contents are shorter than %d bytes", path, 32)
+	}
+	_, err := os.ReadFile(path)
+	if err == nil {
+		panic("characterizeBoot: " + path + " was readable")
+	}
+	return fmt.Sprintf("secretFile %q: %s", path, err.Error())
+}
+
+func sealMode000(path, body string) {
+	writeFile(path, body, 0000)
+	if os.Geteuid() != 0 {
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		panic(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		panic(err)
+	}
+}
+
+// sealUnreadable makes path unreadable between Prepare and Commit.
+// Root can read a mode-000 file, so that case removes the file instead.
+func sealUnreadable(path string) error {
+	if os.Geteuid() == 0 {
+		return os.Remove(path)
+	}
+	return os.Chmod(path, 0)
+}
+
+func restoreSecret(path, body string) {
+	_ = os.Chmod(path, 0600)
+	writeFile(path, body, 0600)
 }
 
 type streamState struct {
