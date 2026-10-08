@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -80,6 +82,27 @@ func TestCheckTypedViewSpecAndSizeKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := Check([]byte(`{}`), spec); err != nil {
+		t.Fatal(err)
+	}
+	// Same star count: the allowed set is the intersection. Fewer stars wins
+	// over a wider star pattern.
+	both := Spec{Typed: map[string]KeySet{
+		"/x/*": {Keys: map[string]bool{"keep": true, "other": true}},
+		"/*/y": {Keys: map[string]bool{"keep": true, "drop": true}},
+	}}
+	if err := Check([]byte(`{"x":{"y":{"keep":1}}}`), both); err != nil {
+		t.Fatal(err)
+	}
+	err = Check([]byte(`{"x":{"y":{"keep":1,"drop":2}}}`), both)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "drop" at /x/y`) {
+		t.Fatal(err)
+	}
+	fewer := Spec{Typed: map[string]KeySet{
+		"/x/*": {Keys: map[string]bool{"y": true}},
+		"/*/*": {Keys: map[string]bool{"y": true, "z": true}},
+	}}
+	err = Check([]byte(`{"x":{"y":{"y":1,"z":2}}}`), fewer)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "z" at /x/y`) {
 		t.Fatal(err)
 	}
 }
@@ -346,4 +369,181 @@ func nestedArrays(n int) json.RawMessage {
 func kindIs(err error, k kerr.Kind) bool {
 	got, ok := kerr.KindOf(err)
 	return ok && got == k
+}
+
+// allocSlack is fixed overhead on top of 8× the input: pattern compile,
+// one shallow open-value copy, and size-class rounding.
+// The path buffer doubles up to the longest pointer (under 2× that pointer)
+// and duplicate detection keeps one decoded string per object key. A single
+// shallow Open match adds one copy of that value. Together those stay under
+// 5× on the shapes below, so 8× still fails the pre-fix Check, which allocated
+// hundreds of times the input (KS-B1). The flat open pattern is /0, one
+// element. A star that matches every element retains one raw per match on
+// purpose; that cost is per match, not per ancestor.
+const allocSlack = 256 << 10
+
+func allocLimit(n int) uint64 {
+	return uint64(8*n) + allocSlack
+}
+
+func TestCheckAllocBound(t *testing.T) {
+	deepArray := nestedArrays(9999)
+	deepObj := deepObjectLongKeys(900, 1000)
+	flat := flatZeroArray(1_000_000)
+	if len(deepArray) != 19998 || len(deepObj) != 904501 || len(flat) != 999999 {
+		t.Fatalf("shapes %d %d %d", len(deepArray), len(deepObj), len(flat))
+	}
+	noop := func(json.RawMessage) error { return nil }
+	cases := []struct {
+		name    string
+		raw     []byte
+		pat     string
+		wantRaw string
+	}{
+		{name: "deep-array/empty", raw: deepArray},
+		{name: "deep-array/open", raw: deepArray, pat: "/0", wantRaw: string(deepArray[1 : len(deepArray)-1])},
+		{name: "deep-object/empty", raw: deepObj},
+		{name: "deep-object/open", raw: deepObj, pat: "/*", wantRaw: string(deepObj[1004 : len(deepObj)-1])},
+		{name: "flat-array/empty", raw: flat},
+		{name: "flat-array/open", raw: flat, pat: "/0", wantRaw: "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := Spec{}
+			if tc.pat != "" {
+				var got []byte
+				var calls int
+				spec = Spec{Open: map[string]func(json.RawMessage) error{
+					tc.pat: func(m json.RawMessage) error {
+						calls++
+						got = append([]byte(nil), m...)
+						return nil
+					},
+				}}
+				if err := Check(tc.raw, spec); err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 || string(got) != tc.wantRaw {
+					t.Fatalf("calls %d got %d bytes", calls, len(got))
+				}
+				spec = Spec{Open: map[string]func(json.RawMessage) error{tc.pat: noop}}
+			} else if err := Check(tc.raw, Spec{}); err != nil {
+				t.Fatal(err)
+			}
+			n := allocatedBytes(func() { _ = Check(tc.raw, spec) })
+			limit := allocLimit(len(tc.raw))
+			t.Logf("allocated %d limit %d input %d ratio %.2f", n, limit, len(tc.raw), float64(n)/float64(len(tc.raw)))
+			if n > limit {
+				t.Fatalf("allocated %d bytes, limit %d, input %d", n, limit, len(tc.raw))
+			}
+		})
+	}
+}
+
+func TestCheckPointerEscape(t *testing.T) {
+	raw := []byte(`{"~":{"/":1}}`)
+	var got json.RawMessage
+	spec := Spec{Open: map[string]func(json.RawMessage) error{
+		"/~0/~1": func(m json.RawMessage) error {
+			got = append(json.RawMessage(nil), m...)
+			return nil
+		},
+	}}
+	if err := Check(raw, spec); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "1" {
+		t.Fatalf("got %s", got)
+	}
+	err := Check([]byte(`{"a/b":1,"a/b":2}`), Spec{})
+	if err == nil || !strings.Contains(err.Error(), `duplicate key "a/b" at /`) {
+		t.Fatal(err)
+	}
+	err = Check([]byte(`{"a":{"b/c":1,"b/c":2}}`), Spec{})
+	if err == nil || !strings.Contains(err.Error(), `duplicate key "b/c" at /a`) {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckNumberRangeAndOrder(t *testing.T) {
+	for _, raw := range []string{`1e9999`, `1e309`, `1.8e308`, `2e308`, `[1e9999]`, `{"a":1e9999}`} {
+		err := Check([]byte(raw), Spec{})
+		if err == nil || err.Error() != "mcpstrict: invalid json" {
+			t.Fatalf("%s: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{`1e308`, `1e-9999`, `0e9999`, `0.0e9999`, `1.7976931348623157e308`} {
+		if err := Check([]byte(raw), Spec{}); err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+	}
+	err := Check([]byte(`{"a":1e9999,"a":1}`), Spec{})
+	if err == nil || !strings.Contains(err.Error(), `duplicate key "a"`) {
+		t.Fatal(err)
+	}
+	called := false
+	spec := Spec{
+		Typed: map[string]KeySet{"/view": {Keys: map[string]bool{"mode": true}}},
+		Open: map[string]func(json.RawMessage) error{
+			"": func(json.RawMessage) error { called = true; return errors.New("open") },
+		},
+	}
+	err = Check([]byte(`1e9999`), spec)
+	if err == nil || err.Error() != "mcpstrict: invalid json" || called {
+		t.Fatalf("err %v called %v", err, called)
+	}
+	called = false
+	err = Check([]byte(`{"view":{"minPoll":1}}`), spec)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "minPoll"`) || called {
+		t.Fatalf("err %v called %v", err, called)
+	}
+}
+
+func allocatedBytes(fn func()) uint64 {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	fn()
+	runtime.GC()
+	prev := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(prev)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func deepObjectLongKeys(depth, keyLen int) []byte {
+	key := strings.Repeat("k", keyLen)
+	open := `{"` + key + `":`
+	b := make([]byte, 0, depth*len(open)+1+depth)
+	for i := 0; i < depth; i++ {
+		b = append(b, open...)
+	}
+	b = append(b, '0')
+	for i := 0; i < depth; i++ {
+		b = append(b, '}')
+	}
+	return b
+}
+
+func flatZeroArray(n int) []byte {
+	if n < 2 {
+		return []byte("[]")
+	}
+	b := make([]byte, 0, n)
+	b = append(b, '[')
+	for len(b) < n-1 {
+		if len(b) > 1 {
+			b = append(b, ',')
+		}
+		b = append(b, '0')
+	}
+	if len(b) > n-1 {
+		b = b[:n-1]
+		if len(b) > 0 && b[len(b)-1] == ',' {
+			b = b[:len(b)-1]
+		}
+	}
+	b = append(b, ']')
+	return b
 }

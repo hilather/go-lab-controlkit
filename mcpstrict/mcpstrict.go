@@ -34,63 +34,169 @@ type Spec struct {
 // Check rejects duplicate keys, then unknown keys in Typed subtrees, then
 // failing Open validators. Nil, an empty slice, "{}", and JSON null are
 // accepted. Whitespace-only input is treated as empty and does not panic.
+//
+// A raw value is retained only when an Open pattern matches that path.
+// While parsing, Check tracks which patterns can still match the current
+// prefix. When none can, the subtree is scanned for syntax and duplicate
+// keys without path strings or copies. A typed spec decodes the input once
+// with encoding/json; that decode is not repeated per node.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
-	p := parser{b: raw}
-	raws := make(map[string]json.RawMessage)
-	if err := p.parseValue("", raws, 0); err != nil {
+	open := compileOpen(spec)
+	p := parser{b: raw, open: open}
+	var live []int
+	if len(open) > 0 {
+		live = make([]int, len(open))
+		for i := range open {
+			live[i] = i
+		}
+	}
+	var matches []rawMatch
+	if err := p.parseValue(live, 0, &matches); err != nil {
 		return err
 	}
 	p.skipWS()
 	if p.i != len(p.b) {
 		return invalid("mcpstrict: trailing data")
 	}
-	if isNull(raws[""]) {
-		return nil
-	}
-	var tree any
-	if err := json.Unmarshal(raw, &tree); err != nil {
-		return invalid("mcpstrict: invalid json")
-	}
-	if err := checkTyped(tree, "", spec); err != nil {
+	// Float overflow used to fall out of encoding/json after a successful
+	// structural parse, so a duplicate key still wins over a huge number.
+	if err := p.rejectOverflow(); err != nil {
 		return err
 	}
-	return checkOpen(raws, spec)
+	if p.rootNull {
+		return nil
+	}
+	if len(spec.Typed) > 0 {
+		var tree any
+		if err := json.Unmarshal(raw, &tree); err != nil {
+			return invalid("mcpstrict: invalid json")
+		}
+		if err := walkTyped(tree, spec, compileTyped(spec), nil); err != nil {
+			return err
+		}
+	}
+	return checkOpen(matches, open)
 }
 
-func isNull(raw json.RawMessage) bool {
-	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+func isNullToken(raw []byte) bool {
+	return len(raw) == 4 && raw[0] == 'n' && raw[1] == 'u' && raw[2] == 'l' && raw[3] == 'l'
 }
 
-func checkTyped(tree any, path string, spec Spec) error {
-	obj, isObj := tree.(map[string]any)
-	if isObj {
-		if set, ok := matchingSet(spec, path); ok {
-			for k := range obj {
-				if !set[k] {
-					return invalid("mcpstrict: unknown key " + strconv.Quote(k) + " at " + displayPath(path))
+func walkTyped(tree any, spec Spec, pats []typedPat, segs []string) error {
+	if obj, isObj := tree.(map[string]any); isObj {
+		if exactTyped(pats, len(segs)) {
+			path := pathFromSegs(segs)
+			if set, ok := matchingSet(spec, path); ok {
+				for k := range obj {
+					if !set[k] {
+						return invalid("mcpstrict: unknown key " + strconv.Quote(k) + " at " + displayPath(path))
+					}
 				}
 			}
 		}
+		if !deeperTyped(pats, len(segs)) {
+			return nil
+		}
 		for k, child := range obj {
-			if err := checkTyped(child, join(path, k), spec); err != nil {
+			seg := pointerEscape(k)
+			next := filterTyped(pats, len(segs), seg)
+			if len(next) == 0 {
+				continue
+			}
+			if err := walkTyped(child, spec, next, withSeg(segs, seg)); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	arr, isArr := tree.([]any)
-	if !isArr {
+	if !isArr || !deeperTyped(pats, len(segs)) {
 		return nil
 	}
 	for i, child := range arr {
-		if err := checkTyped(child, join(path, strconv.Itoa(i)), spec); err != nil {
+		next := filterTypedIndex(pats, len(segs), i)
+		if len(next) == 0 {
+			continue
+		}
+		if err := walkTyped(child, spec, next, withSeg(segs, strconv.Itoa(i))); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func exactTyped(pats []typedPat, depth int) bool {
+	for i := range pats {
+		if len(pats[i].segs) == depth {
+			return true
+		}
+	}
+	return false
+}
+
+func deeperTyped(pats []typedPat, depth int) bool {
+	for i := range pats {
+		if len(pats[i].segs) > depth {
+			return true
+		}
+	}
+	return false
+}
+
+func filterTyped(pats []typedPat, depth int, seg string) []typedPat {
+	var out []typedPat
+	for i := range pats {
+		segs := pats[i].segs
+		if len(segs) <= depth {
+			continue
+		}
+		want := segs[depth]
+		if want == "*" || want == seg {
+			out = append(out, pats[i])
+		}
+	}
+	return out
+}
+
+func filterTypedIndex(pats []typedPat, depth, index int) []typedPat {
+	var out []typedPat
+	for i := range pats {
+		segs := pats[i].segs
+		if len(segs) <= depth {
+			continue
+		}
+		want := segs[depth]
+		if want == "*" || indexEq(want, index) {
+			out = append(out, pats[i])
+		}
+	}
+	return out
+}
+
+func withSeg(segs []string, seg string) []string {
+	out := make([]string, len(segs)+1)
+	copy(out, segs)
+	out[len(segs)] = seg
+	return out
+}
+
+func pathFromSegs(segs []string) string {
+	if len(segs) == 0 {
+		return ""
+	}
+	n := len(segs)
+	for _, s := range segs {
+		n += len(s)
+	}
+	b := make([]byte, 0, n)
+	for _, s := range segs {
+		b = append(b, '/')
+		b = append(b, s...)
+	}
+	return string(b)
 }
 
 func matchingSet(spec Spec, path string) (map[string]bool, bool) {
@@ -202,31 +308,59 @@ func (e *openError) As(target any) bool {
 	return true
 }
 
-func checkOpen(raws map[string]json.RawMessage, spec Spec) error {
-	if len(spec.Open) == 0 || len(raws) == 0 {
+type openPat struct {
+	segs    []string
+	fn      func(json.RawMessage) error
+	pattern string
+}
+
+type typedPat struct {
+	segs []string
+}
+
+type rawMatch struct {
+	path string
+	raw  json.RawMessage
+}
+
+func compileOpen(spec Spec) []openPat {
+	if len(spec.Open) == 0 {
 		return nil
 	}
-	patterns := make([]string, 0, len(spec.Open))
+	out := make([]openPat, 0, len(spec.Open))
 	for pattern, fn := range spec.Open {
 		if fn == nil {
 			continue
 		}
-		patterns = append(patterns, pattern)
+		out = append(out, openPat{segs: splitPath(pattern), fn: fn, pattern: pattern})
 	}
-	sort.Strings(patterns)
-	paths := make([]string, 0, len(raws))
-	for path := range raws {
-		paths = append(paths, path)
+	sort.Slice(out, func(i, j int) bool { return out[i].pattern < out[j].pattern })
+	return out
+}
+
+func compileTyped(spec Spec) []typedPat {
+	if len(spec.Typed) == 0 {
+		return nil
 	}
-	sort.Strings(paths)
-	for _, pattern := range patterns {
-		fn := spec.Open[pattern]
-		for _, path := range paths {
-			if _, ok := matchPattern(pattern, path); !ok {
+	out := make([]typedPat, 0, len(spec.Typed))
+	for pattern := range spec.Typed {
+		out = append(out, typedPat{segs: splitPath(pattern)})
+	}
+	return out
+}
+
+func checkOpen(matches []rawMatch, open []openPat) error {
+	if len(open) == 0 || len(matches) == 0 {
+		return nil
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].path < matches[j].path })
+	for _, pat := range open {
+		for _, m := range matches {
+			if _, ok := matchPattern(pat.pattern, m.path); !ok {
 				continue
 			}
-			if err := fn(raws[path]); err != nil {
-				msg := "mcpstrict: invalid value at " + displayPath(path)
+			if err := pat.fn(m.raw); err != nil {
+				msg := "mcpstrict: invalid value at " + displayPath(m.path)
 				return &openError{err: err, kit: kerr.New(kerr.Invalid, msg)}
 			}
 		}
@@ -252,16 +386,23 @@ func invalid(msg string) error {
 const maxNestingDepth = 10000
 
 type parser struct {
-	b []byte
-	i int
+	b        []byte
+	i        int
+	path     []byte
+	open     []openPat
+	rootNull bool
+	// bigNums holds start,end pairs of number tokens that might not fit
+	// in float64. They are tested only after the structural parse succeeds.
+	bigNums []int
 }
 
-func (p *parser) parseValue(path string, raws map[string]json.RawMessage, depth int) error {
+func (p *parser) parseValue(live []int, depth int, matches *[]rawMatch) error {
 	p.skipWS()
 	if p.i >= len(p.b) {
 		return invalid("mcpstrict: unexpected end")
 	}
 	start := p.i
+	exact, descend := p.classify(live, depth)
 	var err error
 	switch p.b[p.i] {
 	case '{', '[':
@@ -271,9 +412,9 @@ func (p *parser) parseValue(path string, raws map[string]json.RawMessage, depth 
 			return invalid("mcpstrict: invalid json")
 		}
 		if p.b[p.i] == '{' {
-			err = p.parseObject(path, raws, depth)
+			err = p.parseObject(live, depth, matches, descend)
 		} else {
-			err = p.parseArray(path, raws, depth)
+			err = p.parseArray(live, depth, matches, descend)
 		}
 	case '"':
 		_, err = p.parseString()
@@ -289,65 +430,147 @@ func (p *parser) parseValue(path string, raws map[string]json.RawMessage, depth 
 	if err != nil {
 		return err
 	}
-	raws[path] = append(json.RawMessage(nil), p.b[start:p.i]...)
+	if depth == 0 && isNullToken(p.b[start:p.i]) {
+		p.rootNull = true
+	}
+	if exact {
+		raw := append(json.RawMessage(nil), p.b[start:p.i]...)
+		*matches = append(*matches, rawMatch{path: string(p.path), raw: raw})
+	}
 	return nil
 }
 
-func (p *parser) parseObject(path string, raws map[string]json.RawMessage, depth int) error {
+func (p *parser) classify(live []int, depth int) (exact, descend bool) {
+	for _, id := range live {
+		n := len(p.open[id].segs)
+		if n == depth {
+			exact = true
+		} else if n > depth {
+			descend = true
+		}
+		if exact && descend {
+			return
+		}
+	}
+	return
+}
+
+func (p *parser) parseObject(live []int, depth int, matches *[]rawMatch, descend bool) error {
 	p.i++
 	p.skipWS()
 	if p.eat('}') {
 		return nil
 	}
-	seen := map[string]struct{}{}
+	// One key cannot collide. The map waits for a second key so a chain
+	// of single-key objects does not allocate a map per level.
+	var seen map[string]struct{}
+	var first string
+	haveFirst := false
 	for {
 		p.skipWS()
 		if p.i >= len(p.b) || p.b[p.i] != '"' {
-			return invalid("mcpstrict: object key is not a string at " + displayPath(path))
+			return invalid("mcpstrict: object key is not a string at " + p.at())
 		}
 		key, err := p.parseString()
 		if err != nil {
 			return err
 		}
-		if _, ok := seen[key]; ok {
-			return invalid("mcpstrict: duplicate key " + strconv.Quote(key) + " at " + displayPath(path))
+		if !haveFirst {
+			first = key
+			haveFirst = true
+		} else {
+			if seen == nil {
+				seen = make(map[string]struct{}, 4)
+				seen[first] = struct{}{}
+			}
+			if _, ok := seen[key]; ok {
+				return invalid("mcpstrict: duplicate key " + strconv.Quote(key) + " at " + p.at())
+			}
+			seen[key] = struct{}{}
 		}
-		seen[key] = struct{}{}
 		p.skipWS()
 		if !p.eat(':') {
-			return invalid("mcpstrict: missing colon at " + displayPath(path))
+			return invalid("mcpstrict: missing colon at " + p.at())
 		}
-		if err := p.parseValue(join(path, key), raws, depth+1); err != nil {
+		mark := len(p.path)
+		p.appendEscaped(key)
+		var child []int
+		if descend {
+			child = p.childLiveKey(live, depth, key)
+		}
+		if err := p.parseValue(child, depth+1, matches); err != nil {
 			return err
 		}
+		p.path = p.path[:mark]
 		p.skipWS()
 		if p.eat('}') {
 			return nil
 		}
 		if !p.eat(',') {
-			return invalid("mcpstrict: missing comma at " + displayPath(path))
+			return invalid("mcpstrict: missing comma at " + p.at())
 		}
 	}
 }
 
-func (p *parser) parseArray(path string, raws map[string]json.RawMessage, depth int) error {
+func (p *parser) parseArray(live []int, depth int, matches *[]rawMatch, descend bool) error {
 	p.i++
 	p.skipWS()
 	if p.eat(']') {
 		return nil
 	}
 	for i := 0; ; i++ {
-		if err := p.parseValue(join(path, strconv.Itoa(i)), raws, depth+1); err != nil {
+		mark := len(p.path)
+		p.appendIndex(i)
+		var child []int
+		if descend {
+			child = p.childLiveIndex(live, depth, i)
+		}
+		if err := p.parseValue(child, depth+1, matches); err != nil {
 			return err
 		}
+		p.path = p.path[:mark]
 		p.skipWS()
 		if p.eat(']') {
 			return nil
 		}
 		if !p.eat(',') {
-			return invalid("mcpstrict: missing comma at " + displayPath(path))
+			return invalid("mcpstrict: missing comma at " + p.at())
 		}
 	}
+}
+
+func (p *parser) childLiveKey(live []int, depth int, key string) []int {
+	var out []int
+	for _, id := range live {
+		segs := p.open[id].segs
+		if len(segs) <= depth {
+			continue
+		}
+		want := segs[depth]
+		if want == "*" || escapedEq(want, key) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (p *parser) childLiveIndex(live []int, depth, index int) []int {
+	var out []int
+	for _, id := range live {
+		segs := p.open[id].segs
+		if len(segs) <= depth {
+			continue
+		}
+		want := segs[depth]
+		if want == "*" || indexEq(want, index) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (p *parser) at() string {
+	return displayPath(string(p.path))
 }
 
 // parseString returns the key encoding/json would decode.
@@ -397,8 +620,13 @@ func (p *parser) parseString() (string, error) {
 }
 
 func (p *parser) literal(want string) error {
-	if p.i+len(want) > len(p.b) || string(p.b[p.i:p.i+len(want)]) != want {
+	if p.i+len(want) > len(p.b) {
 		return invalid("mcpstrict: invalid literal")
+	}
+	for j := 0; j < len(want); j++ {
+		if p.b[p.i+j] != want[j] {
+			return invalid("mcpstrict: invalid literal")
+		}
 	}
 	p.i += len(want)
 	return nil
@@ -442,7 +670,97 @@ func (p *parser) parseNumber() error {
 	if p.i == start {
 		return invalid("mcpstrict: invalid number")
 	}
+	if maybeOverflow(p.b[start:p.i]) {
+		p.bigNums = append(p.bigNums, start, p.i)
+	}
 	return nil
+}
+
+func (p *parser) rejectOverflow() error {
+	for i := 0; i+1 < len(p.bigNums); i += 2 {
+		tok := p.b[p.bigNums[i]:p.bigNums[i+1]]
+		if _, err := strconv.ParseFloat(string(tok), 64); err != nil {
+			return invalid("mcpstrict: invalid json")
+		}
+	}
+	return nil
+}
+
+// maybeOverflow reports whether tok might not fit in a float64.
+// A zero significand and a magnitude under 10^308 are in range, including
+// underflow to zero. Anything larger is left for strconv.ParseFloat, which
+// is what encoding/json uses, including the edge around 1e308.
+func maybeOverflow(tok []byte) bool {
+	i := 0
+	if len(tok) > 0 && tok[0] == '-' {
+		i++
+	}
+	intDigits := 0
+	sigZero := true
+	for i < len(tok) && isDigit(tok[i]) {
+		if tok[i] != '0' {
+			sigZero = false
+		}
+		intDigits++
+		i++
+	}
+	if i < len(tok) && tok[i] == '.' {
+		i++
+		for i < len(tok) && isDigit(tok[i]) {
+			if tok[i] != '0' {
+				sigZero = false
+			}
+			i++
+		}
+	}
+	if sigZero {
+		return false
+	}
+	exp := 0
+	hugePos := false
+	hugeNeg := false
+	if i < len(tok) && (tok[i] == 'e' || tok[i] == 'E') {
+		i++
+		neg := false
+		if i < len(tok) && (tok[i] == '+' || tok[i] == '-') {
+			neg = tok[i] == '-'
+			i++
+		}
+		n := 0
+		any := false
+		for i < len(tok) && isDigit(tok[i]) {
+			any = true
+			if n > 1000000 {
+				if neg {
+					hugeNeg = true
+				} else {
+					hugePos = true
+				}
+				i++
+				continue
+			}
+			n = n*10 + int(tok[i]-'0')
+			i++
+		}
+		if !any {
+			return false
+		}
+		if neg {
+			exp = -n
+		} else {
+			exp = n
+		}
+	}
+	if hugeNeg {
+		return false
+	}
+	if hugePos {
+		return true
+	}
+	// intDigits+exp <= 308 means the value is below 10^308, which fits.
+	// Larger magnitudes, including a nonzero fraction with a huge exponent,
+	// are checked with strconv after the structural parse.
+	return int64(intDigits)+int64(exp) > 308
 }
 
 func (p *parser) skipWS() {
@@ -470,11 +788,119 @@ func isHex(c byte) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
-func join(path, seg string) string {
-	return path + "/" + pointerEscape(seg)
+func (p *parser) reserve(n int) {
+	if cap(p.path) >= n {
+		return
+	}
+	ncap := cap(p.path)
+	if ncap < 32 {
+		ncap = 32
+	}
+	for ncap < n {
+		if ncap > 1<<28 {
+			ncap = n
+			break
+		}
+		ncap *= 2
+	}
+	nb := make([]byte, len(p.path), ncap)
+	copy(nb, p.path)
+	p.path = nb
+}
+
+func (p *parser) appendEscaped(key string) {
+	extra := 1
+	for i := 0; i < len(key); i++ {
+		if key[i] == '~' || key[i] == '/' {
+			extra += 2
+		} else {
+			extra++
+		}
+	}
+	p.reserve(len(p.path) + extra)
+	p.path = append(p.path, '/')
+	for i := 0; i < len(key); i++ {
+		switch key[i] {
+		case '~':
+			p.path = append(p.path, '~', '0')
+		case '/':
+			p.path = append(p.path, '~', '1')
+		default:
+			p.path = append(p.path, key[i])
+		}
+	}
+}
+
+func (p *parser) appendIndex(index int) {
+	p.reserve(len(p.path) + 1 + 20)
+	p.path = append(p.path, '/')
+	if index == 0 {
+		p.path = append(p.path, '0')
+		return
+	}
+	var tmp [20]byte
+	n := len(tmp)
+	for index > 0 {
+		n--
+		tmp[n] = byte('0' + index%10)
+		index /= 10
+	}
+	p.path = append(p.path, tmp[n:]...)
 }
 
 func pointerEscape(s string) string {
 	s = strings.ReplaceAll(s, "~", "~0")
 	return strings.ReplaceAll(s, "/", "~1")
+}
+
+func escapedEq(seg, key string) bool {
+	si, ki := 0, 0
+	for si < len(seg) && ki < len(key) {
+		switch key[ki] {
+		case '~':
+			if si+1 >= len(seg) || seg[si] != '~' || seg[si+1] != '0' {
+				return false
+			}
+			si += 2
+			ki++
+		case '/':
+			if si+1 >= len(seg) || seg[si] != '~' || seg[si+1] != '1' {
+				return false
+			}
+			si += 2
+			ki++
+		default:
+			if seg[si] != key[ki] {
+				return false
+			}
+			si++
+			ki++
+		}
+	}
+	return si == len(seg) && ki == len(key)
+}
+
+func indexEq(seg string, index int) bool {
+	if index == 0 {
+		return seg == "0"
+	}
+	if seg == "" || seg[0] == '0' {
+		return false
+	}
+	var tmp [20]byte
+	start := len(tmp)
+	for index > 0 {
+		start--
+		tmp[start] = byte('0' + index%10)
+		index /= 10
+	}
+	if len(seg) != len(tmp)-start {
+		return false
+	}
+	for i := 0; i < len(seg); i++ {
+		if seg[i] != tmp[start+i] {
+			return false
+		}
+	}
+	return true
 }
