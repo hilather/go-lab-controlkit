@@ -88,6 +88,17 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 | `idem.Eviction` FIFOByInsert | syslog | accidental | Owned by syslog. Converge after M7. |
 | `audit.Redactor` key sets | per repo | product now | Unify after M7 (section 11). |
 | `audit` `DeniedShare` 0.5, `DeniedGuard` 1/s burst 10 | all six (C2) | committed | Kept. |
+| `audit.Redactor` modes | `PEM` true: ntp, snmp, netconf; false: dns, maildev. `BearerPrefix` true: dns, maildev; false: ntp, snmp, netconf. `ColonLines`: dns only. `Path` and `Value`: ntp, snmp, netconf, maildev, dns. syslog has no audit redactor (zero `Redactor`) | accidental | Owned per repo. Unify after M7 with the key sets (section 11). |
+| `scope.Gate.UnknownResource` | ntp, snmp, netconf, maildev, syslog: `ResourceMissNotFound`; dns: zero (follow `Unmapped`) | accidental, security-relevant | Owned per repo. Converge after M7. A looser value admits an unknown resource. |
+| `scope.Table.AllowUnknownRoleExplicit` | dns: true; ntp, snmp, netconf, maildev, syslog: false | accidental, security-relevant | Owned per repo. Converge after M7. A looser value keeps an unknown role when explicit scopes are set. |
+| `audit.RingOptions` `NewID` / `GetID` | `aud-<seq>`: dns, ntp, snmp, netconf, maildev. syslog: a caller-supplied id, otherwise a ULID-like id | accidental | Owned per repo. Converge after M7. |
+| `audit.RingOptions` `DefaultList` / `MaxList` | 100/100: dns, ntp, snmp, netconf, maildev. syslog: 0/0 (uncapped list) | accidental | Owned per repo. Converge after M7. |
+| stdio unauthenticated wire code (`kittest.StdioRotationDriver.Code`) | `unauthenticated`: ntp, snmp, maildev, dns; `unauthorized`: netconf, syslog | product (wire codes) | Kept. |
+| backward clock | `ratelimit.Keyed` always refills (ntp, snmp management, maildev). dns's limiter, and the query limiters in dns, ntp, and snmp's data plane, refill only when elapsed > 0. `ratelimit.Global` skips a negative elapsed and still clamps and updates last; syslog's global bucket always adds elapsed*rps. Production uses monotonic `time.Now`, so there is no production difference | recorded only | No option. The difference shows only with a non-monotonic injected clock. |
+| bad-credential text | kit and dns bad token: `invalid token` (dns missing credential: `authentication required`). ntp, snmp, netconf, maildev, and syslog bad token: `authentication required` | product (facade-mapped text) | Each facade maps the text. Each consumer's wrapper message tests cover the bad-token case (plan 3.1), in M1 and each later migration. |
+| `authn.FileOpts.TrimRef` | snmp, dns: true; ntp, netconf, maildev, syslog: false (the ref is read as written) | accidental, security-relevant | Owned per repo. Converge after M7. A looser value admits a padded ref. |
+| `authn.Config.RejectBlankTokens` | dns: true (a whitespace-only token is `empty token`); ntp, snmp, netconf, maildev, syslog: false | accidental, security-relevant | Owned per repo. Converge after M7. A looser value admits a whitespace-only token. |
+| `origin.Policy.ZonedLoopback` | dns: true (`netip` accepts zones); ntp, snmp, netconf, maildev, syslog: false (`net.ParseIP` rejects zones) | accidental, security-relevant | Owned per repo. Converge after M7. A looser value admits a zoned loopback origin. |
 
 ## Versioning and releases
 
