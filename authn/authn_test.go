@@ -429,6 +429,20 @@ func TestWholeFileTrimEmptyIsShort(t *testing.T) {
 	}
 }
 
+func TestSecretFileQuoteEscapes(t *testing.T) {
+	dir := t.TempDir()
+	ref := filepath.Join(dir, "a\"b\\c")
+	_, err := Load(Config{
+		Mode: ModeBearer, Duplicates: RejectDuplicateValue,
+		Source: PerTokenFiles([]FileToken{{ID: "a", Role: "administrator", SecretFile: ref}}, FileOpts{Line: FirstNonCommentLine, Resolve: AsGiven}),
+	})
+	le := mustAs(t, err)
+	want := fmt.Sprintf("secretFile %q: %v", ref, le.Err)
+	if le.Error() != want || !strings.Contains(le.Error(), `\"`) || !strings.Contains(le.Error(), `\\`) {
+		t.Fatalf("got %q want %q", le.Error(), want)
+	}
+}
+
 func TestTemplateViolationPaths(t *testing.T) {
 	_, err := Load(Config{
 		Mode: ModeBearer, Duplicates: RejectDuplicateValue, PathPrefix: "spec.auth", RejectEmptyRole: true,

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/hilather/go-lab-controlkit/kerr"
@@ -584,7 +585,7 @@ func joinField(prefix, leaf string) string {
 	return prefix + "." + leaf
 }
 
-func quote(s string) string { return `"` + s + `"` }
+func quote(s string) string { return strconv.Quote(s) }
 
 func specHash(cfg Config) [32]byte {
 	canon := struct {
