@@ -21,24 +21,36 @@ import (
 // Max and SetID are required.
 // IsDenied, when nil, treats every row as not denied.
 // DeniedShare of 0 disables the flood guard. It must be in [0, 1].
+//
+// DefaultList is the page size List uses when limit <= 0.
+// Zero means limit <= 0 returns every stored row (syslog's uncapped List).
+// The five template rings set 100.
+//
+// MaxList caps a positive limit. A limit above MaxList is cut to MaxList.
+// Zero means a positive limit is not capped (syslog).
+// The five template rings set 100, so limit <= 0 and limit > 100 both become 100.
 type RingOptions[E any] struct {
 	Max         int
 	SetID       func(*E, string)
 	IsDenied    func(E) bool
 	DeniedShare float64
+	DefaultList int
+	MaxList     int
 }
 
 // Ring is a bounded in-memory log. Append of a denied row evicts the oldest
 // denied row first once denied rows fill DeniedShare of the ring, so a denied
 // flood cannot evict OK rows.
 type Ring[E any] struct {
-	mu     sync.Mutex
-	max    int
-	setID  func(*E, string)
-	denied func(E) bool
-	share  float64
-	rows   []ringRow[E]
-	index  map[string]int
+	mu          sync.Mutex
+	max         int
+	setID       func(*E, string)
+	denied      func(E) bool
+	share       float64
+	defaultList int
+	maxList     int
+	rows        []ringRow[E]
+	index       map[string]int
 }
 
 type ringRow[E any] struct {
@@ -57,12 +69,17 @@ func NewRing[E any](o RingOptions[E]) (*Ring[E], error) {
 	if o.DeniedShare < 0 || o.DeniedShare > 1 {
 		return nil, errors.New("audit: DeniedShare must be in [0, 1]")
 	}
+	if o.DefaultList < 0 || o.MaxList < 0 {
+		return nil, errors.New("audit: list limits must not be negative")
+	}
 	return &Ring[E]{
-		max:    o.Max,
-		setID:  o.SetID,
-		denied: o.IsDenied,
-		share:  o.DeniedShare,
-		index:  map[string]int{},
+		max:         o.Max,
+		setID:       o.SetID,
+		denied:      o.IsDenied,
+		share:       o.DeniedShare,
+		defaultList: o.DefaultList,
+		maxList:     o.MaxList,
+		index:       map[string]int{},
 	}, nil
 }
 
@@ -135,21 +152,32 @@ func (r *Ring[E]) removeAt(i int) {
 	}
 }
 
-// List returns the most recent limit rows, oldest first among them.
-// limit <= 0 returns every row, oldest first.
+// List returns up to limit rows, newest first.
+// limit <= 0 uses DefaultList, or every row when DefaultList is 0.
+// A positive MaxList cuts a larger limit down to MaxList.
 func (r *Ring[E]) List(limit int) []E {
 	if r == nil {
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	rows := r.rows
-	if limit > 0 && len(rows) > limit {
-		rows = rows[len(rows)-limit:]
+	n := len(r.rows)
+	if limit <= 0 {
+		if r.defaultList > 0 {
+			limit = r.defaultList
+		} else {
+			limit = n
+		}
 	}
-	out := make([]E, len(rows))
-	for i, row := range rows {
-		out[i] = row.e
+	if r.maxList > 0 && limit > r.maxList {
+		limit = r.maxList
+	}
+	if limit > n {
+		limit = n
+	}
+	out := make([]E, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = r.rows[n-1-i].e
 	}
 	return out
 }

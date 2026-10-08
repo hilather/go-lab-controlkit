@@ -32,7 +32,7 @@ func TestRingBoundsOrder(t *testing.T) {
 		t.Fatal(r.Len())
 	}
 	got := r.List(0)
-	if len(got) != 3 || got[0].Name != "b" || got[2].Name != "d" {
+	if len(got) != 3 || got[0].Name != "d" || got[2].Name != "b" {
 		t.Fatalf("order %+v", got)
 	}
 	if _, ok := r.Get(a.ID); ok {
@@ -44,6 +44,49 @@ func TestRingBoundsOrder(t *testing.T) {
 	recent := r.List(1)
 	if len(recent) != 1 || recent[0].Name != "d" {
 		t.Fatalf("recent %+v", recent)
+	}
+}
+
+func TestRingListPageClamp(t *testing.T) {
+	r, err := NewRing[row](RingOptions[row]{Max: 8, SetID: setID, DefaultList: 100, MaxList: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		r.Append(row{Name: name})
+	}
+	// maildev List(0) is newest-first and clamped, not the whole ring when it is longer than 100.
+	got := r.List(0)
+	if len(got) != 3 || got[0].Name != "c" || got[2].Name != "a" {
+		t.Fatalf("short page %+v", got)
+	}
+	if len(r.List(1)) != 1 || r.List(1)[0].Name != "c" {
+		t.Fatal(r.List(1))
+	}
+	wide, err := NewRing[row](RingOptions[row]{Max: 150, SetID: setID, DefaultList: 100, MaxList: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		wide.Append(row{Name: "n"})
+	}
+	if len(wide.List(0)) != 100 || len(wide.List(1000)) != 100 || len(wide.List(2)) != 2 {
+		t.Fatalf("clamp 0=%d 1000=%d 2=%d", len(wide.List(0)), len(wide.List(1000)), len(wide.List(2)))
+	}
+	// syslog leaves both limits at zero: List(0) returns every row, newest first.
+	open, err := NewRing[row](RingOptions[row]{Max: 150, SetID: setID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 120; i++ {
+		open.Append(row{Name: "n"})
+	}
+	all := open.List(0)
+	if len(all) != 120 {
+		t.Fatalf("uncapped %d", len(all))
+	}
+	if _, err := NewRing[row](RingOptions[row]{Max: 1, SetID: setID, DefaultList: -1}); err == nil {
+		t.Fatal("negative DefaultList")
 	}
 }
 
@@ -59,7 +102,7 @@ func TestRingWipeResize(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := r.List(0)
-	if len(got) != 2 || got[0].Name != "c" || got[1].Name != "d" {
+	if len(got) != 2 || got[0].Name != "d" || got[1].Name != "c" {
 		t.Fatalf("resize %+v", got)
 	}
 	if err := r.Resize(0); err == nil {
@@ -296,7 +339,7 @@ func TestDeniedFloodGuard(t *testing.T) {
 			okNames = append(okNames, e.Name)
 		}
 	}
-	if len(okNames) != 2 || okNames[0] != "apply" || okNames[1] != "reset" {
+	if len(okNames) != 2 || okNames[0] != "reset" || okNames[1] != "apply" {
 		t.Fatalf("ok rows = %v", okNames)
 	}
 
