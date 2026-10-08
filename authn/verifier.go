@@ -233,9 +233,6 @@ func authenticateMaterial(m *Material, r Request) (scope.Principal, error) {
 	defer zero(token)
 	switch {
 	case strings.EqualFold(scheme, "Bearer"):
-		if strings.ContainsAny(string(token), " \t") {
-			return scope.Principal{}, kerr.New(kerr.Unauthenticated, "authentication required")
-		}
 		return lookupBearer(m, string(token))
 	case strings.EqualFold(scheme, "Basic"):
 		if !r.AllowBasic || m.basic == nil || m.mode != ModeBearerAndBasic {
@@ -248,7 +245,10 @@ func authenticateMaterial(m *Material, r Request) (scope.Principal, error) {
 }
 
 func lookupBearer(m *Material, secret string) (scope.Principal, error) {
-	if secret == "" {
+	// ntp, snmp, netconf, maildev, and syslog reject space and tab inside the
+	// shared lookup, so HTTP and stdio fail closed together. dns (FirstMatchWins)
+	// keeps internal spaces and compares the trimmed string.
+	if secret == "" || (m.dup != FirstMatchWins && strings.ContainsAny(secret, " \t")) {
 		return scope.Principal{}, kerr.New(kerr.Unauthenticated, "authentication required")
 	}
 	sum := sha256.Sum256([]byte(secret))

@@ -162,6 +162,47 @@ func TestMissingFileSkipped(t *testing.T) {
 	}
 }
 
+func TestBearerInternalSpaceOnEveryEntry(t *testing.T) {
+	cases := []struct {
+		name   string
+		dup    DupPolicy
+		secret string
+		ok     bool
+	}{
+		{name: "reject space", dup: RejectDuplicateValue, secret: "sec ret"},
+		{name: "reject tab", dup: RejectDuplicateValue, secret: "sec\tret"},
+		{name: "first space", dup: FirstMatchWins, secret: "sec ret", ok: true},
+		{name: "first tab", dup: FirstMatchWins, secret: "sec\tret", ok: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mustLoad(t, memCfg(ModeBearer, tc.dup, raw("id", "administrator", tc.secret)))
+			v := mustVer(t, m)
+			_, authErr := v.Authenticate(Request{Authorization: "Bearer " + tc.secret})
+			_, bearerErr := v.AuthenticateBearer([]byte(tc.secret))
+			_, resolveErr := (&StdioPin{v: v, secret: NewSecret([]byte(tc.secret))}).Resolve()
+			errs := []error{authErr, bearerErr, resolveErr}
+			if tc.ok {
+				for _, err := range errs {
+					if err != nil {
+						t.Fatalf("entry rejected a spaced secret: %v", err)
+					}
+				}
+				p, err := v.AuthenticateBearer([]byte(tc.secret))
+				if err != nil || p.ID != "id" {
+					t.Fatalf("principal %+v %v", p, err)
+				}
+				return
+			}
+			for _, err := range errs {
+				if err == nil || err.Error() != "authentication required" {
+					t.Fatalf("got %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestAcceptDevLoopbackZeroTokens(t *testing.T) {
 	m := mustLoad(t, Config{
 		Mode: ModeDevLoopbackUnauth, Source: Memory(nil), Duplicates: RejectDuplicateValue,
