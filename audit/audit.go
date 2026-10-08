@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,18 @@ import (
 // MaxList caps a positive limit. A limit above MaxList is cut to MaxList.
 // Zero means a positive limit is not capped (syslog).
 // The five template rings set 100, so limit <= 0 and limit > 100 both become 100.
+//
+// NewID, when non-nil, builds the id for an append that does not already
+// carry one. seq is the 1-based count of Append calls on this ring. Wipe does
+// not reset it. Nil means a random 32-digit hex id. A crypto/rand failure
+// uses a process-wide counter so two fallbacks cannot collide.
+//
+// GetID, when non-nil, reads an id already stored on e. A non-empty result is
+// kept and indexed, and SetID is not called (syslog's caller-supplied id).
+// An empty result is replaced with NewID(seq), or the random hex id, passed
+// to SetID, then read back with GetID when that is set, so the ring indexes
+// the id actually stored. Nil means the ring indexes the id it passed to
+// SetID, and SetID must store that id.
 type RingOptions[E any] struct {
 	Max         int
 	SetID       func(*E, string)
@@ -36,6 +49,8 @@ type RingOptions[E any] struct {
 	DeniedShare float64
 	DefaultList int
 	MaxList     int
+	NewID       func(seq uint64) string
+	GetID       func(E) string
 }
 
 // Ring is a bounded in-memory log. Append of a denied row evicts the oldest
@@ -49,6 +64,9 @@ type Ring[E any] struct {
 	share       float64
 	defaultList int
 	maxList     int
+	newID       func(uint64) string
+	getID       func(E) string
+	seq         uint64
 	rows        []ringRow[E]
 	index       map[string]int
 }
@@ -79,27 +97,62 @@ func NewRing[E any](o RingOptions[E]) (*Ring[E], error) {
 		share:       o.DeniedShare,
 		defaultList: o.DefaultList,
 		maxList:     o.MaxList,
+		newID:       o.NewID,
+		getID:       o.GetID,
 		index:       map[string]int{},
 	}, nil
 }
 
-// Append stores e, assigning an id through SetID, and returns the stored value.
+// Append stores e and returns the stored value.
+// An id already stored on e is kept when GetID is set and returns it.
+// Otherwise the id comes from NewID, or from a random hex id when NewID is
+// nil, and is written with SetID. The ring indexes the id that is stored.
+// An empty or colliding id is replaced with a counter id and passed to SetID.
 // When the ring is full, a denied row evicts the oldest denied row once denied
 // rows have reached DeniedShare of the capacity. Otherwise the oldest row goes.
 func (r *Ring[E]) Append(e E) E {
 	if r == nil {
 		return e
 	}
-	id := newID()
-	r.setID(&e, id)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.rows) >= r.max {
 		r.evictLocked(e)
 	}
+	r.seq++
+	id := ""
+	if r.getID != nil {
+		id = r.getID(e)
+	}
+	if id == "" {
+		if r.newID != nil {
+			id = r.newID(r.seq)
+		}
+		if id == "" {
+			id = newID()
+		}
+		r.setID(&e, id)
+		if r.getID != nil {
+			if stored := r.getID(e); stored != "" {
+				id = stored
+			}
+		}
+	}
+	if id == "" || r.idTaken(id) {
+		id = fallbackID()
+		for r.idTaken(id) {
+			id = fallbackID()
+		}
+		r.setID(&e, id)
+	}
 	r.index[id] = len(r.rows)
 	r.rows = append(r.rows, ringRow[E]{id: id, e: e})
 	return e
+}
+
+func (r *Ring[E]) idTaken(id string) bool {
+	_, ok := r.index[id]
+	return ok
 }
 
 func (r *Ring[E]) evictLocked(incoming E) {
@@ -236,11 +289,21 @@ func (r *Ring[E]) Resize(n int) error {
 	return nil
 }
 
+var fallbackSeq atomic.Uint64
+
 func newID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+		return fallbackID()
 	}
+	return hex.EncodeToString(b[:])
+}
+
+// fallbackID is unique for this process even when two calls share a nanosecond.
+func fallbackID() string {
+	var b [16]byte
+	binary.BigEndian.PutUint64(b[0:], uint64(time.Now().UnixNano()))
+	binary.BigEndian.PutUint64(b[8:], fallbackSeq.Add(1))
 	return hex.EncodeToString(b[:])
 }
 

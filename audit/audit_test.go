@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,118 @@ func TestRingListPageClamp(t *testing.T) {
 	}
 	if _, err := NewRing[row](RingOptions[row]{Max: 1, SetID: setID, DefaultList: -1}); err == nil {
 		t.Fatal("negative DefaultList")
+	}
+}
+
+func TestRingIDSchemes(t *testing.T) {
+	aud, err := NewRing[row](RingOptions[row]{
+		Max:         4,
+		SetID:       setID,
+		DefaultList: 100,
+		MaxList:     100,
+		NewID: func(seq uint64) string {
+			return "aud-" + strconv.FormatUint(seq, 10)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e1 := aud.Append(row{Name: "one"})
+	e2 := aud.Append(row{Name: "two"})
+	e3 := aud.Append(row{Name: "three"})
+	if e1.ID != "aud-1" || e2.ID != "aud-2" || e3.ID != "aud-3" {
+		t.Fatalf("ids %s %s %s", e1.ID, e2.ID, e3.ID)
+	}
+	listed := aud.List(0)
+	if len(listed) != 3 || listed[0].ID != "aud-3" {
+		t.Fatalf("list %+v", listed)
+	}
+	got, ok := aud.Get("aud-2")
+	if !ok || got.Name != "two" {
+		t.Fatalf("get %+v %v", got, ok)
+	}
+	aud.Wipe()
+	e4 := aud.Append(row{Name: "four"})
+	if e4.ID != "aud-4" {
+		t.Fatalf("wipe does not reset seq, got %s", e4.ID)
+	}
+
+	// syslog keeps a caller-supplied id and otherwise asks NewID (a ULID in the facade).
+	sys, err := NewRing[row](RingOptions[row]{
+		Max:   4,
+		SetID: setID,
+		GetID: func(e row) string { return e.ID },
+		NewID: func(seq uint64) string { return "ulid-" + strconv.FormatUint(seq, 10) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := sys.Append(row{ID: "caller-1", Name: "kept"})
+	if kept.ID != "caller-1" {
+		t.Fatal(kept.ID)
+	}
+	if found, ok := sys.Get("caller-1"); !ok || found.Name != "kept" {
+		t.Fatal(found, ok)
+	}
+	gen := sys.Append(row{Name: "gen"})
+	if gen.ID != "ulid-2" {
+		t.Fatalf("generated %s", gen.ID)
+	}
+	if _, ok := sys.Get("ulid-2"); !ok {
+		t.Fatal("generated id was not indexed")
+	}
+
+	// SetID rewrites the id. The ring indexes what GetID reads back.
+	rewritten, err := NewRing[row](RingOptions[row]{
+		Max: 2,
+		SetID: func(e *row, id string) {
+			e.ID = "id-" + id
+		},
+		GetID: func(e row) string { return e.ID },
+		NewID: func(seq uint64) string { return strconv.FormatUint(seq, 10) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := rewritten.Append(row{Name: "r"})
+	if stored.ID != "id-1" {
+		t.Fatal(stored.ID)
+	}
+	if _, ok := rewritten.Get("id-1"); !ok {
+		t.Fatal("rewritten id missed")
+	}
+	if _, ok := rewritten.Get("1"); ok {
+		t.Fatal("indexed the pre-SetID string")
+	}
+
+	// A repeated caller id must not collapse two rows onto one index entry.
+	clash, err := NewRing[row](RingOptions[row]{
+		Max:   4,
+		SetID: setID,
+		GetID: func(e row) string { return e.ID },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := clash.Append(row{ID: "same", Name: "first"})
+	second := clash.Append(row{ID: "same", Name: "second"})
+	if first.ID != "same" || second.ID == "same" || second.ID == "" {
+		t.Fatalf("clash %q %q", first.ID, second.ID)
+	}
+	if got, ok := clash.Get("same"); !ok || got.Name != "first" {
+		t.Fatal(got, ok)
+	}
+	if got, ok := clash.Get(second.ID); !ok || got.Name != "second" {
+		t.Fatal(got, ok)
+	}
+	if clash.Len() != 2 {
+		t.Fatal(clash.Len())
+	}
+
+	a := fallbackID()
+	b := fallbackID()
+	if a == b || len(a) != 32 {
+		t.Fatalf("fallback %q %q", a, b)
 	}
 }
 
