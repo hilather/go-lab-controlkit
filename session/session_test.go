@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,7 +159,7 @@ func TestSessionAbsoluteZero(t *testing.T) {
 	if _, ok := s.Lookup(iss.Cookie); !ok {
 		t.Fatal("absolute 0 expired a live idle session")
 	}
-	if s.MaxAge() != int((1000 * time.Hour).Seconds()) {
+	if s.MaxAge() != 0 {
 		t.Fatalf("max-age %d", s.MaxAge())
 	}
 	if !s.ExpiresAt(iss.Session).Equal(iss.Session.LastSeen.Add(cfg.Idle)) {
@@ -644,6 +645,13 @@ func TestCookieHelpers(t *testing.T) {
 	c := SessionCookie("labntp_session", "abc", true, 60)
 	if c.Name != "labntp_session" || !c.HttpOnly || !c.Secure || c.Path != "/" || c.SameSite != http.SameSiteLaxMode || c.MaxAge != 60 {
 		t.Fatalf("cookie %+v", c)
+	}
+	if !strings.Contains(c.String(), "Max-Age=60") {
+		t.Fatalf("positive max-age missing: %s", c.String())
+	}
+	browser := SessionCookie("labdns_session", "abc", false, 0)
+	if browser.MaxAge != 0 || strings.Contains(browser.String(), "Max-Age") {
+		t.Fatalf("zero max-age set an attribute: %s", browser.String())
 	}
 	cleared := ClearCookie("labntp_session", false)
 	if cleared.MaxAge != -1 || !cleared.Expires.Equal(time.Unix(0, 0).UTC()) {

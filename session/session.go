@@ -409,17 +409,15 @@ func (s *Store) Rotate(cookie string) (Issued, error) {
 	return issued, nil
 }
 
-// MaxAge is the cookie Max-Age in seconds. It is Absolute when Absolute is
-// non-zero, and Idle when Absolute is 0.
+// MaxAge is the cookie Max-Age in seconds.
+// A positive Absolute returns that duration. Absolute 0 returns 0, which
+// omits the Max-Age attribute so the cookie dies with the browser session.
+// dns calls setSessionCookie with max-age 0. The five pass a positive Absolute.
 func (s *Store) MaxAge() int {
-	if s == nil {
+	if s == nil || s.cfg.Absolute == 0 {
 		return 0
 	}
-	d := s.cfg.Absolute
-	if d == 0 {
-		d = s.cfg.Idle
-	}
-	return int(d.Seconds())
+	return int(s.cfg.Absolute.Seconds())
 }
 
 // ExpiresAt is the earlier of idle and absolute expiry. Absolute 0 leaves
