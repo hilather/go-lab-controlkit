@@ -40,7 +40,23 @@ func TestTableMatrices(t *testing.T) {
 	if err != nil || role != "viewer" || !SameSet(scopes, []string{"write"}) {
 		t.Fatalf("explicit expand %s %v %v", role, scopes, err)
 	}
+	role, scopes, err = explicit.Expand("", []string{"write"})
+	if err != nil || role != "administrator" || !SameSet(scopes, []string{"write"}) {
+		t.Fatalf("empty role explicit %s %v %v", role, scopes, err)
+	}
+	if _, _, err = explicit.Expand("nope", []string{"read"}); err == nil {
+		t.Fatal("unknown role with explicit scopes")
+	}
+	explicit.AllowUnknownRoleExplicit = true
+	role, scopes, err = explicit.Expand("nope", []string{"read"})
+	if err != nil || role != "nope" || !SameSet(scopes, []string{"read"}) {
+		t.Fatalf("dns unknown role %s %v %v", role, scopes, err)
+	}
+	if _, _, err = explicit.Expand("nope", nil); err == nil {
+		t.Fatal("dns flag allowed an unknown role without explicit scopes")
+	}
 
+	scopes = []string{"write"}
 	p := Principal{Role: "viewer", Scopes: scopes}
 	if err := Authorize(explicit, p, []string{"write"}); err != nil {
 		t.Fatal(err)

@@ -379,7 +379,7 @@ func loopPrincipal(cfg Config) scope.Principal {
 }
 
 func tableZero(t scope.Table) bool {
-	return t.Roles == nil && t.EmptyRole == "" && !t.ExplicitReplacesRole && t.WildcardScope == ""
+	return t.Roles == nil && t.EmptyRole == "" && !t.ExplicitReplacesRole && !t.AllowUnknownRoleExplicit && t.WildcardScope == ""
 }
 
 // Mode is the compiled mode.

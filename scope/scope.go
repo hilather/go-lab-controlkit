@@ -31,22 +31,31 @@ type Evaluator interface {
 // An empty EmptyRole leaves an empty role empty.
 // ExplicitReplacesRole false means Expand ignores an explicit list and stores
 // the role's scopes. True means a non-empty explicit list is stored as given.
+// AllowUnknownRoleExplicit false rejects a non-empty role that is not in Roles,
+// including when an explicit list replaces the role's scopes. True is the dns
+// load rule: that role is kept when the explicit list is non-empty.
 // WildcardScope, when non-empty, is a stored scope that satisfies every check.
 // An empty WildcardScope means there is no wildcard.
 type Table struct {
-	Roles                map[string][]string
-	EmptyRole            string
-	ExplicitReplacesRole bool
-	WildcardScope        string
+	Roles                    map[string][]string
+	EmptyRole                string
+	ExplicitReplacesRole     bool
+	AllowUnknownRoleExplicit bool
+	WildcardScope            string
 }
 
 // Expand resolves role and explicit scopes the way the template repos do at load.
 // An unknown role, or an empty role that does not fill from EmptyRole, is an error.
+// A non-empty unknown role is still an error when explicit scopes replace the role,
+// unless AllowUnknownRoleExplicit is set.
 func (t Table) Expand(role string, explicit []string) (string, []string, error) {
 	if role == "" {
 		role = t.EmptyRole
 	}
 	if t.ExplicitReplacesRole && len(explicit) > 0 {
+		if role != "" && !t.known(role) && !t.AllowUnknownRoleExplicit {
+			return "", nil, kerr.New(kerr.Invalid, "unknown role "+quote(role))
+		}
 		return role, append([]string(nil), explicit...), nil
 	}
 	scopes, ok := t.Roles[role]
@@ -54,6 +63,11 @@ func (t Table) Expand(role string, explicit []string) (string, []string, error) 
 		return "", nil, kerr.New(kerr.Invalid, "unknown role "+quote(role))
 	}
 	return role, append([]string(nil), scopes...), nil
+}
+
+func (t Table) known(role string) bool {
+	_, ok := t.Roles[role]
+	return ok
 }
 
 // Effective returns the scopes a check uses. A principal with a non-empty
