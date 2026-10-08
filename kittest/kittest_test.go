@@ -53,6 +53,8 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(t, "")) }, []func(Testing){
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "read")) },
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "reset")) },
+			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "missing-open")) },
+			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "missing-lockout")) },
 		}},
 		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(t, false)) }, []func(Testing){
 			func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(nil, true)) },
@@ -115,6 +117,26 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestApplyNoSecretReadMissingArmSeeded pins the two missing-file checks
+// the "read" and "reset" bugs never reach. missing-open reports one open
+// only after MakeMissing. missing-lockout drops the bearer and the cookie
+// only on that apply. Each message is that check, so a driver caught
+// earlier fails this test, and deleting the check leaves the driver green.
+func TestApplyNoSecretReadMissingArmSeeded(t *testing.T) {
+	open := runFake(func(tb Testing) {
+		ApplyNoSecretRead(tb, newApply(nil, "missing-open"))
+	})
+	if !open.failed || len(open.msgs) != 1 || !strings.Contains(open.msgs[0], "missing apply ok") {
+		t.Fatalf("missing-open: failed=%v msgs=%v", open.failed, open.msgs)
+	}
+	lock := runFake(func(tb Testing) {
+		ApplyNoSecretRead(tb, newApply(nil, "missing-lockout"))
+	})
+	if !lock.failed || len(lock.msgs) != 1 || !strings.Contains(lock.msgs[0], "missing apply locked the admin out") {
+		t.Fatalf("missing-lockout: failed=%v msgs=%v", lock.failed, lock.msgs)
 	}
 }
 
@@ -441,6 +463,9 @@ type applyRef struct {
 	cookie  string
 	bug     string
 	failTxt string
+	// missing is set by MakeMissing. The missing-arm bugs read it so the
+	// unreadable arm still looks like a good apply.
+	missing bool
 }
 
 func newApply(t *testing.T, bug string) *applyRef {
@@ -477,6 +502,7 @@ func (d *applyRef) MakeUnreadable(context.Context) {
 }
 
 func (d *applyRef) MakeMissing(context.Context) {
+	d.missing = true
 	_ = os.Chmod(d.path, 0600)
 	if err := os.Remove(d.path); err != nil && !os.IsNotExist(err) {
 		panic(err)
@@ -484,7 +510,11 @@ func (d *applyRef) MakeMissing(context.Context) {
 }
 
 // Apply does not run Prepare. P2 keeps the loaded bearer. The "read"
-// bug is an apply that opens the secret file.
+// bug opens the secret file on every apply, so the unreadable arm
+// catches it. The "missing-open" bug reports no open until the file is
+// gone, then reports one. The "missing-lockout" bug is the pre-P2
+// failClosedAuth shape: the missing-file apply reports no open, then
+// replaces the verifier with Empty and clears the cookie session.
 func (d *applyRef) Apply(context.Context) (bool, int) {
 	if d.bug == "read" {
 		st, err := prepareToken(d.path)
@@ -492,6 +522,13 @@ func (d *applyRef) Apply(context.Context) (bool, int) {
 			return true, 1
 		}
 		return true, len(opensFrom(st))
+	}
+	if d.missing && d.bug == "missing-open" {
+		return true, 1
+	}
+	if d.missing && d.bug == "missing-lockout" {
+		d.v = authn.Empty()
+		d.s.Clear()
 	}
 	return true, 0
 }
