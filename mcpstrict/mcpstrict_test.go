@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"runtime/debug"
@@ -165,6 +166,223 @@ func TestCheckOpenStablePathOnly(t *testing.T) {
 	if err == nil || err.Error() != "mcpstrict: invalid value at /items/a" {
 		t.Fatal(err)
 	}
+}
+
+func TestCheckOpenLexicographicMinimum(t *testing.T) {
+	starErr := errors.New("star")
+	aErr := errors.New("akey")
+	// "/*" < "/a". Under "/*", "/10" < "/2" < "/a". The minimum failing
+	// pair is ("/*", "/10") even though "/2" and "/a" appear first.
+	spec := Spec{Open: map[string]func(json.RawMessage) error{
+		"/*": func(m json.RawMessage) error {
+			if bytes.Equal(m, []byte("2")) || bytes.Equal(m, []byte("10")) {
+				return starErr
+			}
+			return nil
+		},
+		"/a": func(json.RawMessage) error { return aErr },
+	}}
+	raw := []byte(`{"2":2,"a":1,"0":0,"10":10}`)
+	err := Check(raw, spec)
+	if err == nil || err.Error() != "mcpstrict: invalid value at /10" {
+		t.Fatal(err)
+	}
+	if !errors.Is(err, starErr) || errors.Is(err, aErr) || !kindIs(err, kerr.Invalid) {
+		t.Fatal(err)
+	}
+	if errors.Unwrap(err) != starErr {
+		t.Fatal(err)
+	}
+
+	// Array indexes use the same path order: "/10" < "/2".
+	arrSpec := Spec{Open: map[string]func(json.RawMessage) error{
+		"/*": spec.Open["/*"],
+	}}
+	err = Check([]byte(`[0,1,2,3,4,5,6,7,8,9,10]`), arrSpec)
+	if err == nil || err.Error() != "mcpstrict: invalid value at /10" || !errors.Is(err, starErr) {
+		t.Fatal(err)
+	}
+
+	// A later smaller pattern beats a failure already held for "/a".
+	later := Spec{Open: map[string]func(json.RawMessage) error{
+		"/*": func(m json.RawMessage) error {
+			if bytes.Equal(m, []byte("2")) {
+				return starErr
+			}
+			return nil
+		},
+		"/a": func(json.RawMessage) error { return aErr },
+	}}
+	err = Check([]byte(`{"a":1,"b":2}`), later)
+	if err == nil || err.Error() != "mcpstrict: invalid value at /b" || !errors.Is(err, starErr) {
+		t.Fatal(err)
+	}
+
+	// The empty pattern sorts before every other pattern.
+	rootErr := errors.New("root")
+	both := Spec{Open: map[string]func(json.RawMessage) error{
+		"":   func(m json.RawMessage) error { return rootErr },
+		"/a": func(json.RawMessage) error { return aErr },
+	}}
+	err = Check([]byte(`{"a":1}`), both)
+	if err == nil || err.Error() != "mcpstrict: invalid value at /" || !errors.Is(err, rootErr) || errors.Is(err, aErr) {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckOpenPrecedenceAndRootNull(t *testing.T) {
+	openErr := errors.New("open")
+	called := 0
+	spec := Spec{Open: map[string]func(json.RawMessage) error{
+		"/a": func(m json.RawMessage) error {
+			called++
+			if string(m) != "1" {
+				t.Fatalf("raw %s", m)
+			}
+			return openErr
+		},
+	}}
+	err := Check([]byte(`{"a":1,"b":2,"b":3}`), spec)
+	if err == nil || !strings.Contains(err.Error(), `duplicate key "b"`) || errors.Is(err, openErr) || called != 1 {
+		t.Fatalf("err %v called %d", err, called)
+	}
+	// A duplicate before the open value is found first. The validator does not run.
+	called = 0
+	err = Check([]byte(`{"b":1,"b":2,"a":1}`), spec)
+	if err == nil || !strings.Contains(err.Error(), `duplicate key "b"`) || called != 0 {
+		t.Fatalf("err %v called %d", err, called)
+	}
+
+	called = 0
+	typed := Spec{
+		Typed: map[string]KeySet{"/view": {Keys: map[string]bool{"mode": true}}},
+		Open: map[string]func(json.RawMessage) error{
+			"/state": func(m json.RawMessage) error {
+				called++
+				if string(m) != "1" || cap(m) != len(m) {
+					t.Fatalf("raw %q cap %d", m, cap(m))
+				}
+				return openErr
+			},
+		},
+	}
+	err = Check([]byte(`{"state":1,"view":{"minPoll":1}}`), typed)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "minPoll"`) || errors.Is(err, openErr) || called != 1 {
+		t.Fatalf("err %v called %d", err, called)
+	}
+
+	called = 0
+	err = Check([]byte(`{"a":1,"b":1e9999}`), spec)
+	if err == nil || err.Error() != "mcpstrict: invalid json" || errors.Is(err, openErr) || called != 1 {
+		t.Fatalf("err %v called %d", err, called)
+	}
+	err = Check([]byte(`{"a":1} true`), spec)
+	if err == nil || err.Error() != "mcpstrict: trailing data" || errors.Is(err, openErr) {
+		t.Fatal(err)
+	}
+
+	rootCalled := false
+	root := Spec{Open: map[string]func(json.RawMessage) error{
+		"": func(json.RawMessage) error { rootCalled = true; return openErr },
+	}}
+	for _, raw := range []string{`null`, `  null`, `null  `} {
+		rootCalled = false
+		if err := Check([]byte(raw), root); err != nil || rootCalled {
+			t.Fatalf("%q err %v called %v", raw, err, rootCalled)
+		}
+	}
+}
+
+func TestCheckOpenRawSlice(t *testing.T) {
+	raw := []byte(`{"state": {"x":1}, "n": 2}`)
+	var kept json.RawMessage
+	spec := Spec{Open: map[string]func(json.RawMessage) error{
+		"/state": func(m json.RawMessage) error {
+			kept = m
+			return nil
+		},
+		"/n": func(m json.RawMessage) error {
+			if string(m) != "2" || cap(m) != 1 {
+				t.Fatalf("n %q cap %d", m, cap(m))
+			}
+			return nil
+		},
+	}}
+	if err := Check(raw, spec); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(`{"x":1}`)
+	off := bytes.Index(raw, want)
+	if off < 0 || string(kept) != string(want) || cap(kept) != len(kept) {
+		t.Fatalf("kept %q cap %d", kept, cap(kept))
+	}
+	raw[off] = 'X'
+	if kept[0] != 'X' {
+		t.Fatal("validator slice does not alias the input")
+	}
+	raw[off] = '{'
+}
+
+func TestCheckOpenWideMask(t *testing.T) {
+	// 64 patterns: the last sorted one sits on bit 63.
+	if err := checkLastPattern(t, 63); err != nil {
+		t.Fatal(err)
+	}
+	// 65 patterns: the last sorted one sits in the second mask word.
+	if err := checkLastPattern(t, 64); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sibling must not keep the previous child's live bits.
+	stale := errors.New("stale")
+	open := map[string]func(json.RawMessage) error{}
+	for i := 0; i < 63; i++ {
+		open[fmt.Sprintf("/e%04d/y", i)] = func(json.RawMessage) error { return stale }
+	}
+	open["/d0000/x"] = func(m json.RawMessage) error {
+		if string(m) != "1" {
+			t.Fatalf("stale raw %s", m)
+		}
+		return nil
+	}
+	zErr := errors.New("z")
+	open["/z/b"] = func(m json.RawMessage) error {
+		if string(m) != "2" || cap(m) != len(m) {
+			t.Fatalf("z raw %q cap %d", m, cap(m))
+		}
+		return zErr
+	}
+	if len(open) <= 64 {
+		t.Fatalf("patterns %d", len(open))
+	}
+	err := Check([]byte(`{"d0000":{"x":1},"z":{"b":2}}`), Spec{Open: open})
+	if err == nil || err.Error() != "mcpstrict: invalid value at /z/b" || !errors.Is(err, zErr) || errors.Is(err, stale) {
+		t.Fatal(err)
+	}
+}
+
+func checkLastPattern(t *testing.T, dummies int) error {
+	t.Helper()
+	want := errors.New("last")
+	open := make(map[string]func(json.RawMessage) error, dummies+1)
+	noop := func(json.RawMessage) error { return nil }
+	for i := 0; i < dummies; i++ {
+		open[fmt.Sprintf("/d%04d", i)] = noop
+	}
+	open["/z"] = func(m json.RawMessage) error {
+		if string(m) != "1" || cap(m) != len(m) {
+			return fmt.Errorf("raw %q cap %d", m, cap(m))
+		}
+		return want
+	}
+	err := Check([]byte(`{"z":1}`), Spec{Open: open})
+	if err == nil || err.Error() != "mcpstrict: invalid value at /z" || !errors.Is(err, want) {
+		if err == nil {
+			return errors.New("missing open error for last pattern")
+		}
+		return fmt.Errorf("%v", err)
+	}
+	return nil
 }
 
 func TestCheckStringDecodeMatchesEncodingJSON(t *testing.T) {
@@ -372,14 +590,11 @@ func kindIs(err error, k kerr.Kind) bool {
 }
 
 // allocSlack is fixed overhead on top of 8× the input: pattern compile,
-// one shallow open-value copy, and size-class rounding.
-// The path buffer doubles up to the longest pointer (under 2× that pointer)
-// and duplicate detection keeps one decoded string per object key. A single
-// shallow Open match adds one copy of that value. Together those stay under
-// 5× on the shapes below, so 8× still fails the pre-fix Check, which allocated
-// hundreds of times the input (KS-B1). The flat open pattern is /0, one
-// element. A star that matches every element retains one raw per match on
-// purpose; that cost is per match, not per ancestor.
+// the path buffer (it doubles up to the longest pointer), and duplicate
+// detection's decoded key strings. Open matching does not copy a value
+// per match. A flat "*" pattern calls the validator once per element and
+// keeps at most one failure. 8× still fails the pre-fix Check, which
+// allocated hundreds of times the input (KS-B1, KS-B1b).
 const allocSlack = 256 << 10
 
 func allocLimit(n int) uint64 {
@@ -438,6 +653,91 @@ func TestCheckAllocBound(t *testing.T) {
 			}
 		})
 	}
+
+	// Every element matches "/*". The validator returns nil and allocates
+	// nothing, so a retained raw per match would blow the bound.
+	t.Run("flat-array/star", func(t *testing.T) {
+		wantCalls := bytes.Count(flat, []byte("0"))
+		calls := 0
+		spec := Spec{Open: map[string]func(json.RawMessage) error{
+			"/*": func(m json.RawMessage) error {
+				calls++
+				if len(m) != 1 || m[0] != '0' || cap(m) != len(m) {
+					t.Fatalf("raw %q cap %d len %d", m, cap(m), len(m))
+				}
+				return nil
+			},
+		}}
+		if err := Check(flat, spec); err != nil {
+			t.Fatal(err)
+		}
+		if calls != wantCalls {
+			t.Fatalf("calls %d want %d", calls, wantCalls)
+		}
+		measureOpenAlloc(t, flat, Spec{Open: map[string]func(json.RawMessage) error{"/*": noop}})
+	})
+
+	// More than 64 patterns takes the multi-word mask. A fresh []int per
+	// element would exceed the bound on this array.
+	t.Run("flat-array/star-wide", func(t *testing.T) {
+		open := map[string]func(json.RawMessage) error{"/*": noop}
+		for i := 0; i < 64; i++ {
+			open[fmt.Sprintf("/nope/%d", i)] = noop
+		}
+		if len(open) != 65 {
+			t.Fatalf("patterns %d", len(open))
+		}
+		measureOpenAlloc(t, flat, Spec{Open: open})
+	})
+
+	// Star patterns that match at many depths of the long-key object.
+	// One pattern per level, not one raw copy per level.
+	t.Run("deep-object/open-levels", func(t *testing.T) {
+		const levels = 64
+		calls := make([]int, levels)
+		open := make(map[string]func(json.RawMessage) error, levels)
+		for d := 1; d <= levels; d++ {
+			d := d
+			open[starPattern(d)] = func(m json.RawMessage) error {
+				calls[d-1]++
+				if len(m) == 0 || m[0] != '{' || cap(m) != len(m) {
+					t.Fatalf("depth %d len %d cap %d", d, len(m), cap(m))
+				}
+				return nil
+			}
+		}
+		if err := Check(deepObj, Spec{Open: open}); err != nil {
+			t.Fatal(err)
+		}
+		for d, n := range calls {
+			if n != 1 {
+				t.Fatalf("depth %d calls %d", d+1, n)
+			}
+		}
+		measure := make(map[string]func(json.RawMessage) error, levels)
+		for d := 1; d <= levels; d++ {
+			measure[starPattern(d)] = noop
+		}
+		measureOpenAlloc(t, deepObj, Spec{Open: measure})
+	})
+}
+
+func measureOpenAlloc(t *testing.T, raw []byte, spec Spec) {
+	t.Helper()
+	n := allocatedBytes(func() { _ = Check(raw, spec) })
+	limit := allocLimit(len(raw))
+	t.Logf("allocated %d limit %d input %d ratio %.2f", n, limit, len(raw), float64(n)/float64(len(raw)))
+	if n > limit {
+		t.Fatalf("allocated %d bytes, limit %d, input %d", n, limit, len(raw))
+	}
+}
+
+func starPattern(depth int) string {
+	b := make([]byte, 0, depth*2)
+	for i := 0; i < depth; i++ {
+		b = append(b, '/', '*')
+	}
+	return string(b)
 }
 
 func TestCheckPointerEscape(t *testing.T) {
@@ -455,7 +755,14 @@ func TestCheckPointerEscape(t *testing.T) {
 	if string(got) != "1" {
 		t.Fatalf("got %s", got)
 	}
-	err := Check([]byte(`{"a/b":1,"a/b":2}`), Spec{})
+	esc := errors.New("escaped")
+	err := Check([]byte(`{"~":{"/":1}}`), Spec{Open: map[string]func(json.RawMessage) error{
+		"/~0/~1": func(json.RawMessage) error { return esc },
+	}})
+	if err == nil || err.Error() != "mcpstrict: invalid value at /~0/~1" || !errors.Is(err, esc) {
+		t.Fatal(err)
+	}
+	err = Check([]byte(`{"a/b":1,"a/b":2}`), Spec{})
 	if err == nil || !strings.Contains(err.Error(), `duplicate key "a/b" at /`) {
 		t.Fatal(err)
 	}

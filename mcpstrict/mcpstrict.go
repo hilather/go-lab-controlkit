@@ -8,6 +8,7 @@ package mcpstrict
 import (
 	"bytes"
 	"encoding/json"
+	"math/bits"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,21 @@ type KeySet struct {
 // Open maps a JSON-pointer path to the repo's validator for that value.
 // Typed maps a path to the allowed keys of that object.
 // A path segment "*" matches any one key or index.
+// The zero Open map and the zero Typed map check nothing.
+//
+// A nested Open validator runs when its value ends. That can be before
+// Check has found a duplicate key later in the document and before the
+// Typed walk. If a duplicate-key, trailing-data, invalid-json, overflow,
+// or Typed error is found, that error is returned and the Open result is
+// ignored. The root value is the whole document, so its validator runs
+// only after those checks have passed, and it does not run for JSON null.
+// A validator is also skipped when a failure already held is smaller in
+// (pattern, path) order. Validators must be free of side effects.
+//
+// The json.RawMessage passed to a validator is a sub-slice of the caller's
+// input, with its capacity capped at the value. The validator must not
+// modify those bytes. Retaining the slice is allowed; it aliases the
+// caller's buffer for as long as that buffer lives.
 type Spec struct {
 	Open  map[string]func(json.RawMessage) error
 	Typed map[string]KeySet
@@ -35,26 +51,25 @@ type Spec struct {
 // failing Open validators. Nil, an empty slice, "{}", and JSON null are
 // accepted. Whitespace-only input is treated as empty and does not panic.
 //
-// A raw value is retained only when an Open pattern matches that path.
-// While parsing, Check tracks which patterns can still match the current
+// Open validators on nested values run while Check is still parsing.
+// The Open error returned is the lexicographically first failing
+// (pattern, path) pair. Spec.Open is the contract for that timing, for
+// side effects, and for the sub-slice those validators receive. While
+// parsing, Check tracks which patterns can still match the current
 // prefix. When none can, the subtree is scanned for syntax and duplicate
-// keys without path strings or copies. A typed spec decodes the input once
-// with encoding/json; that decode is not repeated per node.
+// keys without path strings or copies. A typed spec decodes the input
+// once with encoding/json; that decode is not repeated per node.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
 	open := compileOpen(spec)
-	p := parser{b: raw, open: open}
-	var live []int
+	p := parser{b: raw, open: open, failAt: -1}
+	var mask []uint64
 	if len(open) > 0 {
-		live = make([]int, len(open))
-		for i := range open {
-			live[i] = i
-		}
+		mask = p.rootMask()
 	}
-	var matches []rawMatch
-	if err := p.parseValue(live, 0, &matches); err != nil {
+	if err := p.parseValue(mask, 0); err != nil {
 		return err
 	}
 	p.skipWS()
@@ -78,7 +93,12 @@ func Check(raw json.RawMessage, spec Spec) error {
 			return err
 		}
 	}
-	return checkOpen(matches, open)
+	if p.rootMatched {
+		// The root path is empty. Nested calls have already restored p.path.
+		p.path = p.path[:0]
+		p.consider(p.rootID, json.RawMessage(p.b[p.rootStart:p.rootEnd:p.rootEnd]))
+	}
+	return p.openFailure()
 }
 
 func isNullToken(raw []byte) bool {
@@ -318,11 +338,6 @@ type typedPat struct {
 	segs []string
 }
 
-type rawMatch struct {
-	path string
-	raw  json.RawMessage
-}
-
 func compileOpen(spec Spec) []openPat {
 	if len(spec.Open) == 0 {
 		return nil
@@ -347,25 +362,6 @@ func compileTyped(spec Spec) []typedPat {
 		out = append(out, typedPat{segs: splitPath(pattern)})
 	}
 	return out
-}
-
-func checkOpen(matches []rawMatch, open []openPat) error {
-	if len(open) == 0 || len(matches) == 0 {
-		return nil
-	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].path < matches[j].path })
-	for _, pat := range open {
-		for _, m := range matches {
-			if _, ok := matchPattern(pat.pattern, m.path); !ok {
-				continue
-			}
-			if err := pat.fn(m.raw); err != nil {
-				msg := "mcpstrict: invalid value at " + displayPath(m.path)
-				return &openError{err: err, kit: kerr.New(kerr.Invalid, msg)}
-			}
-		}
-	}
-	return nil
 }
 
 func displayPath(path string) string {
@@ -394,15 +390,52 @@ type parser struct {
 	// bigNums holds start,end pairs of number tokens that might not fit
 	// in float64. They are tested only after the structural parse succeeds.
 	bigNums []int
+
+	// mask[depth] is the live-pattern bitmask reused for every node at
+	// that depth. A nil mask passed into parseValue means no pattern
+	// reaches that node, so a stale mask[depth] is never read for a
+	// sibling that no pattern can enter.
+	mask [][]uint64
+
+	// failAt is the pattern index of the best Open failure so far, or -1.
+	// Patterns are sorted, so a larger index cannot beat failAt.
+	failAt   int
+	failPath string
+	failErr  error
+
+	rootMatched bool
+	rootID      int
+	rootStart   int
+	rootEnd     int
 }
 
-func (p *parser) parseValue(live []int, depth int, matches *[]rawMatch) error {
+// rootMask marks every compiled pattern live at the root.
+func (p *parser) rootMask() []uint64 {
+	n := len(p.open)
+	words := (n + 63) >> 6
+	m0 := make([]uint64, words)
+	for i := 0; i < n; i++ {
+		m0[i>>6] |= uint64(1) << uint(i&63)
+	}
+	p.mask = make([][]uint64, 1)
+	p.mask[0] = m0
+	return m0
+}
+
+func (p *parser) ensureMask(depth int) {
+	words := (len(p.open) + 63) >> 6
+	for len(p.mask) <= depth {
+		p.mask = append(p.mask, make([]uint64, words))
+	}
+}
+
+func (p *parser) parseValue(mask []uint64, depth int) error {
 	p.skipWS()
 	if p.i >= len(p.b) {
 		return invalid("mcpstrict: unexpected end")
 	}
 	start := p.i
-	exact, descend := p.classify(live, depth)
+	descend := p.longerOpen(mask, depth)
 	var err error
 	switch p.b[p.i] {
 	case '{', '[':
@@ -412,9 +445,9 @@ func (p *parser) parseValue(live []int, depth int, matches *[]rawMatch) error {
 			return invalid("mcpstrict: invalid json")
 		}
 		if p.b[p.i] == '{' {
-			err = p.parseObject(live, depth, matches, descend)
+			err = p.parseObject(mask, depth, descend)
 		} else {
-			err = p.parseArray(live, depth, matches, descend)
+			err = p.parseArray(mask, depth, descend)
 		}
 	case '"':
 		_, err = p.parseString()
@@ -433,29 +466,113 @@ func (p *parser) parseValue(live []int, depth int, matches *[]rawMatch) error {
 	if depth == 0 && isNullToken(p.b[start:p.i]) {
 		p.rootNull = true
 	}
-	if exact {
-		raw := append(json.RawMessage(nil), p.b[start:p.i]...)
-		*matches = append(*matches, rawMatch{path: string(p.path), raw: raw})
+	// The root validator waits until duplicate-key, overflow, and Typed
+	// checks have passed. Nested values end here, before those checks
+	// finish for the rest of the document.
+	if depth == 0 {
+		p.noteRoot(mask, start)
+		return nil
 	}
+	p.applyExact(mask, depth, start)
 	return nil
 }
 
-func (p *parser) classify(live []int, depth int) (exact, descend bool) {
-	for _, id := range live {
-		n := len(p.open[id].segs)
-		if n == depth {
-			exact = true
-		} else if n > depth {
-			descend = true
+func (p *parser) longerOpen(mask []uint64, depth int) bool {
+	for word := 0; word < len(mask); word++ {
+		set := mask[word]
+		for set != 0 {
+			bit := bits.TrailingZeros64(set)
+			set &^= uint64(1) << uint(bit)
+			id := word<<6 + bit
+			if len(p.open[id].segs) > depth {
+				return true
+			}
 		}
-		if exact && descend {
+	}
+	return false
+}
+
+func (p *parser) noteRoot(mask []uint64, start int) {
+	for word := 0; word < len(mask); word++ {
+		set := mask[word]
+		for set != 0 {
+			bit := bits.TrailingZeros64(set)
+			set &^= uint64(1) << uint(bit)
+			id := word<<6 + bit
+			if len(p.open[id].segs) != 0 {
+				continue
+			}
+			p.rootMatched = true
+			p.rootID = id
+			p.rootStart = start
+			p.rootEnd = p.i
 			return
 		}
 	}
-	return
 }
 
-func (p *parser) parseObject(live []int, depth int, matches *[]rawMatch, descend bool) error {
+func (p *parser) applyExact(mask []uint64, depth, start int) {
+	var raw json.RawMessage
+	have := false
+	for word := 0; word < len(mask); word++ {
+		set := mask[word]
+		for set != 0 {
+			bit := bits.TrailingZeros64(set)
+			set &^= uint64(1) << uint(bit)
+			id := word<<6 + bit
+			if len(p.open[id].segs) != depth {
+				continue
+			}
+			if !have {
+				raw = json.RawMessage(p.b[start:p.i:p.i])
+				have = true
+			}
+			p.consider(id, raw)
+		}
+	}
+}
+
+// consider calls pattern id when a failure from it could still be the
+// lexicographic minimum (pattern, path). The path string is built only
+// after the validator fails.
+func (p *parser) consider(id int, raw json.RawMessage) {
+	if p.failAt >= 0 && id > p.failAt {
+		return
+	}
+	if p.failAt == id && !pathLess(p.path, p.failPath) {
+		return
+	}
+	err := p.open[id].fn(raw)
+	if err == nil {
+		return
+	}
+	p.failAt = id
+	p.failPath = string(p.path)
+	p.failErr = err
+}
+
+func (p *parser) openFailure() error {
+	if p.failAt < 0 {
+		return nil
+	}
+	msg := "mcpstrict: invalid value at " + displayPath(p.failPath)
+	return &openError{err: p.failErr, kit: kerr.New(kerr.Invalid, msg)}
+}
+
+func pathLess(a []byte, b string) bool {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return len(a) < len(b)
+}
+
+func (p *parser) parseObject(parent []uint64, depth int, descend bool) error {
 	p.i++
 	p.skipWS()
 	if p.eat('}') {
@@ -494,11 +611,11 @@ func (p *parser) parseObject(live []int, depth int, matches *[]rawMatch, descend
 		}
 		mark := len(p.path)
 		p.appendEscaped(key)
-		var child []int
+		var child []uint64
 		if descend {
-			child = p.childLiveKey(live, depth, key)
+			child = p.childMask(parent, depth, key, 0, true)
 		}
-		if err := p.parseValue(child, depth+1, matches); err != nil {
+		if err := p.parseValue(child, depth+1); err != nil {
 			return err
 		}
 		p.path = p.path[:mark]
@@ -512,7 +629,7 @@ func (p *parser) parseObject(live []int, depth int, matches *[]rawMatch, descend
 	}
 }
 
-func (p *parser) parseArray(live []int, depth int, matches *[]rawMatch, descend bool) error {
+func (p *parser) parseArray(parent []uint64, depth int, descend bool) error {
 	p.i++
 	p.skipWS()
 	if p.eat(']') {
@@ -521,11 +638,11 @@ func (p *parser) parseArray(live []int, depth int, matches *[]rawMatch, descend 
 	for i := 0; ; i++ {
 		mark := len(p.path)
 		p.appendIndex(i)
-		var child []int
+		var child []uint64
 		if descend {
-			child = p.childLiveIndex(live, depth, i)
+			child = p.childMask(parent, depth, "", i, false)
 		}
-		if err := p.parseValue(child, depth+1, matches); err != nil {
+		if err := p.parseValue(child, depth+1); err != nil {
 			return err
 		}
 		p.path = p.path[:mark]
@@ -539,34 +656,38 @@ func (p *parser) parseArray(live []int, depth int, matches *[]rawMatch, descend 
 	}
 }
 
-func (p *parser) childLiveKey(live []int, depth int, key string) []int {
-	var out []int
-	for _, id := range live {
-		segs := p.open[id].segs
-		if len(segs) <= depth {
-			continue
-		}
-		want := segs[depth]
-		if want == "*" || escapedEq(want, key) {
-			out = append(out, id)
+// childMask writes the patterns still live under this key or index into
+// the scratch word slice for depth+1. Siblings reuse that slice; the
+// caller passes the result into the child and does not read it again.
+func (p *parser) childMask(parent []uint64, depth int, key string, index int, byKey bool) []uint64 {
+	p.ensureMask(depth + 1)
+	child := p.mask[depth+1]
+	for i := range child {
+		child[i] = 0
+	}
+	for word := 0; word < len(parent); word++ {
+		set := parent[word]
+		for set != 0 {
+			bit := bits.TrailingZeros64(set)
+			set &^= uint64(1) << uint(bit)
+			id := word<<6 + bit
+			segs := p.open[id].segs
+			if len(segs) <= depth {
+				continue
+			}
+			want := segs[depth]
+			ok := false
+			if byKey {
+				ok = want == "*" || escapedEq(want, key)
+			} else {
+				ok = want == "*" || indexEq(want, index)
+			}
+			if ok {
+				child[id>>6] |= uint64(1) << uint(id&63)
+			}
 		}
 	}
-	return out
-}
-
-func (p *parser) childLiveIndex(live []int, depth, index int) []int {
-	var out []int
-	for _, id := range live {
-		segs := p.open[id].segs
-		if len(segs) <= depth {
-			continue
-		}
-		want := segs[depth]
-		if want == "*" || indexEq(want, index) {
-			out = append(out, id)
-		}
-	}
-	return out
+	return child
 }
 
 func (p *parser) at() string {
