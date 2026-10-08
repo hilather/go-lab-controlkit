@@ -241,8 +241,13 @@ func ApplyNoSecretRead(t Testing, d ApplyDriver) {
 	if !ok || opens != 0 {
 		t.Fatalf("missing apply ok %v opens %d", ok, opens)
 	}
-	if !d.BearerWorks(ctx) || !d.SessionWorks(ctx) {
-		t.Fatalf("missing apply locked the admin out")
+	// Own messages, not one ||. The lockout seed breaks the bearer, so a
+	// combined condition never calls SessionWorks.
+	if !d.BearerWorks(ctx) {
+		t.Fatalf("missing apply locked the bearer out")
+	}
+	if !d.SessionWorks(ctx) {
+		t.Fatalf("missing apply locked the session out")
 	}
 	msg, err := d.Reset(ctx)
 	if err == nil || msg != d.FailureText() {

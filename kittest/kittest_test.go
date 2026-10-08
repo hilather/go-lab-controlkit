@@ -50,11 +50,22 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		{"ResetZeroTokens", func(t *testing.T) { ResetZeroTokens(t, newZero(false)) }, []func(Testing){
 			func(tb Testing) { ResetZeroTokens(tb, newZero(true)) },
 		}},
-		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(t, "")) }, []func(Testing){
+		{"ApplyNoSecretRead", func(t *testing.T) {
+			ApplyNoSecretRead(t, newApply(t, ""))
+			// The bad-list entry only requires a failure. This requires the
+			// session sentence, so a bearer failure does not satisfy it.
+			sess := runFake(func(tb Testing) {
+				ApplyNoSecretRead(tb, newApply(nil, "missing-session"))
+			})
+			if !sess.failed || len(sess.msgs) != 1 || !strings.Contains(sess.msgs[0], "missing apply locked the session out") {
+				t.Fatalf("missing-session: failed=%v msgs=%v", sess.failed, sess.msgs)
+			}
+		}, []func(Testing){
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "read")) },
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "reset")) },
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "missing-open")) },
 			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "missing-lockout")) },
+			func(tb Testing) { ApplyNoSecretRead(tb, newApply(nil, "missing-session")) },
 		}},
 		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(t, false)) }, []func(Testing){
 			func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(nil, true)) },
@@ -120,11 +131,13 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 	}
 }
 
-// TestApplyNoSecretReadMissingArmSeeded pins the two missing-file checks
-// the "read" and "reset" bugs never reach. missing-open reports one open
-// only after MakeMissing. missing-lockout drops the bearer and the cookie
-// only on that apply. Each message is that check, so a driver caught
-// earlier fails this test, and deleting the check leaves the driver green.
+// TestApplyNoSecretReadMissingArmSeeded pins the missing-file checks the
+// "read" and "reset" bugs never reach. missing-open reports one open only
+// after MakeMissing. missing-lockout replaces the verifier on that apply,
+// so the bearer check fails before the session check. missing-session
+// keeps the bearer and clears only the cookie. Each message is that
+// check, so a driver caught earlier fails this test, and deleting the
+// check leaves the driver green.
 func TestApplyNoSecretReadMissingArmSeeded(t *testing.T) {
 	open := runFake(func(tb Testing) {
 		ApplyNoSecretRead(tb, newApply(nil, "missing-open"))
@@ -135,8 +148,14 @@ func TestApplyNoSecretReadMissingArmSeeded(t *testing.T) {
 	lock := runFake(func(tb Testing) {
 		ApplyNoSecretRead(tb, newApply(nil, "missing-lockout"))
 	})
-	if !lock.failed || len(lock.msgs) != 1 || !strings.Contains(lock.msgs[0], "missing apply locked the admin out") {
+	if !lock.failed || len(lock.msgs) != 1 || !strings.Contains(lock.msgs[0], "missing apply locked the bearer out") {
 		t.Fatalf("missing-lockout: failed=%v msgs=%v", lock.failed, lock.msgs)
+	}
+	sess := runFake(func(tb Testing) {
+		ApplyNoSecretRead(tb, newApply(nil, "missing-session"))
+	})
+	if !sess.failed || len(sess.msgs) != 1 || !strings.Contains(sess.msgs[0], "missing apply locked the session out") {
+		t.Fatalf("missing-session: failed=%v msgs=%v", sess.failed, sess.msgs)
 	}
 }
 
@@ -515,6 +534,7 @@ func (d *applyRef) MakeMissing(context.Context) {
 // gone, then reports one. The "missing-lockout" bug is the pre-P2
 // failClosedAuth shape: the missing-file apply reports no open, then
 // replaces the verifier with Empty and clears the cookie session.
+// The "missing-session" bug keeps that bearer and clears only the cookie.
 func (d *applyRef) Apply(context.Context) (bool, int) {
 	if d.bug == "read" {
 		st, err := prepareToken(d.path)
@@ -528,6 +548,9 @@ func (d *applyRef) Apply(context.Context) (bool, int) {
 	}
 	if d.missing && d.bug == "missing-lockout" {
 		d.v = authn.Empty()
+		d.s.Clear()
+	}
+	if d.missing && d.bug == "missing-session" {
 		d.s.Clear()
 	}
 	return true, 0
