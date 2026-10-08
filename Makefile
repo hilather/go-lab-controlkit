@@ -14,7 +14,7 @@ help:
 		'  test-race    go test -race ./...' \
 		'  fuzz-smoke   every Fuzz target for FUZZTIME (default 10s)' \
 		'  vulncheck    govulncheck ./...' \
-		'  check-gomod  no replace, go.work, require or toolchain; go 1.26' \
+		'  check-gomod  no replace, go.work, require, toolchain, or nested go.mod; go 1.26' \
 		'  ci           all of the above'
 
 ci: fmt-check vet build test-race fuzz-smoke vulncheck check-gomod

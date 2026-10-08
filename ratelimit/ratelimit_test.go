@@ -1,0 +1,525 @@
+package ratelimit
+
+import (
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+func ctorNTP() Ctor {
+	return Ctor{
+		DefaultRate:  32,
+		DefaultBurst: 64,
+		NegativeRate: NegativeRateDisabled,
+		ZeroRate:     ZeroRateUseDefault,
+		Burst:        BurstDefaultOnZero,
+	}
+}
+
+func ctorDNSMgmt() Ctor {
+	return Ctor{
+		DefaultRate:  32,
+		DefaultBurst: 64,
+		NegativeRate: NegativeRateDisabled,
+		ZeroRate:     ZeroRateUseDefault,
+		Burst:        BurstDefaultOnNonPositive,
+	}
+}
+
+func ctorDNSRaw() Ctor {
+	c := ctorDNSMgmt()
+	c.ZeroRate = ZeroRateDeny
+	return c
+}
+
+func opts(max int, now func() time.Time) Options {
+	return Options{IdleFloor: 30 * time.Second, IdleRefillFactor: 4, MaxKeys: max, Now: now}
+}
+
+func TestCtorRows(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+
+	k, err := NewKeyed(0, 0, ctorNTP(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("ntp rate 0 burst 0 should use defaults and allow")
+	}
+
+	k, err = NewKeyed(-1, 10, ctorNTP(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if !k.Allow("a") {
+			t.Fatal("negative rate disables")
+		}
+	}
+	if err = k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("b") {
+		t.Fatal("setRate on a disabled limiter must be a no-op")
+	}
+	if err = k.SetRate(1, 1, Live{}); err == nil {
+		t.Fatal("zero Live on a disabled limiter")
+	}
+
+	k, err = NewKeyed(0, -5, ctorDNSRaw(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.Allow("a") {
+		t.Fatal("dns raw rate 0 must deny")
+	}
+
+	k, err = NewKeyed(0, -1, ctorDNSMgmt(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("dns management rate 0 burst <0 uses defaults")
+	}
+
+	k, err = NewKeyed(10, -3, ctorNTP(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.Allow("a") {
+		t.Fatal("ntp burst <0 is stored and denies")
+	}
+
+	if _, err = NewKeyed(1, 1, ctorNTP(), Options{IdleFloor: time.Second, IdleRefillFactor: 4, MaxKeys: 0}); err == nil {
+		t.Fatal("MaxKeys 0")
+	}
+	if _, err = NewKeyed(1, 1, ctorNTP(), Options{IdleFloor: time.Second, IdleRefillFactor: 4, MaxKeys: -2}); err == nil {
+		t.Fatal("MaxKeys negative")
+	}
+	if DefaultMaxKeys != 1024 {
+		t.Fatal(DefaultMaxKeys)
+	}
+}
+
+func TestSetRateLive(t *testing.T) {
+	var now time.Time
+	clock := func() time.Time { return now }
+	k, err := NewKeyed(1, 1, ctorNTP(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("first")
+	}
+	if k.Allow("a") {
+		t.Fatal("burst 1 exhausted")
+	}
+	if err = k.SetRate(0, 0, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if !k.Allow("a") {
+		t.Fatal("non-positive setRate uses defaults and refills")
+	}
+}
+
+func TestSetRateClampsAtSameTimestamp(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(1, 10, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("seed")
+	}
+	// Balance is 9. Cutting burst to 1 at this same timestamp must clamp
+	// before the next spend, or the call still spends the old balance.
+	if err = k.SetRate(1, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("clamped burst should still allow one")
+	}
+	if k.Allow("a") {
+		t.Fatal("burst 1 was not applied at the same timestamp")
+	}
+}
+
+func TestBackwardClockBurnsTokens(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(10, 5, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("seed")
+	}
+	// tokens is 4. One second backward at rate 10 subtracts 10.
+	now = now.Add(-time.Second)
+	if k.Allow("a") {
+		t.Fatal("backward step kept the old balance")
+	}
+}
+
+func TestSetRateRejectsZeroLive(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(5, 5, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = k.SetRate(1, 1, Live{}); err == nil {
+		t.Fatal("zero Live")
+	}
+	if err = k.SetRate(1, 1, Live{Rate: BurstDefaultOnZero}); err == nil {
+		t.Fatal("zero burst meaning")
+	}
+	if !k.Allow("a") {
+		t.Fatal("rejected SetRate changed the bucket")
+	}
+	// burst 5, one spent, four left. A rejected update must leave them.
+	for i := 0; i < 4; i++ {
+		if !k.Allow("a") {
+			t.Fatalf("balance changed at %d", i)
+		}
+	}
+	if k.Allow("a") {
+		t.Fatal("burst grew")
+	}
+	var nilKeyed *Keyed
+	if err = nilKeyed.SetRate(1, 1, Live{Rate: BurstDefaultOnZero, Burst: BurstDefaultOnZero}); err == nil {
+		t.Fatal("nil limiter")
+	}
+}
+
+func TestIdleCutoffFollowsSetRate(t *testing.T) {
+	var now time.Time
+	clock := func() time.Time { return now }
+	// rate 1 / burst 100 => cutoff = max(30s, 4*100/1 s) = 400s, gap = 100s.
+	k, err := NewKeyed(1, 100, ctorNTP(), opts(8, clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("idle") {
+		t.Fatal("seed")
+	}
+	now = now.Add(100 * time.Second)
+	if !k.Allow("other") {
+		t.Fatal("other")
+	}
+	if !k.Contains("idle") {
+		t.Fatal("idle key swept inside the long cutoff")
+	}
+	// Recompute: rate 100 / burst 1 => cutoff = 30s floor, gap = 7.5s.
+	// A SetRate that did not take effect would still use the 400s cutoff.
+	if err = k.SetRate(100, 1, Live{Rate: BurstDefaultOnNonPositive, Burst: BurstDefaultOnNonPositive}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(31 * time.Second)
+	if !k.Allow("third") {
+		t.Fatal("third")
+	}
+	if k.Contains("idle") {
+		t.Fatal("idle key survived past the cutoff recomputed after SetRate")
+	}
+}
+
+func TestGlobalSkipsNegativeElapsed(t *testing.T) {
+	var now time.Time
+	var g Global
+	g.SetNow(func() time.Time { return now })
+	// Burst 5, rate 10. One allow leaves 4. A one-second step backward
+	// would subtract 10 if Global added elapsed the way syslog does.
+	if !g.AllowAt(10, 5) {
+		t.Fatal("seed")
+	}
+	now = now.Add(-time.Second)
+	if !g.AllowAt(10, 5) {
+		t.Fatal("backward step subtracted tokens")
+	}
+	// Same timestamp, smaller burst: still clamp, then one token remains
+	// spendable and the next call is denied.
+	if !g.AllowAt(10, 1) {
+		t.Fatal("backward step did not clamp")
+	}
+	if g.AllowAt(10, 1) {
+		t.Fatal("clamp left more than one token")
+	}
+	// last moved to the backward timestamp, so one second forward refills.
+	now = now.Add(time.Second)
+	if !g.AllowAt(10, 1) {
+		t.Fatal("backward step did not update last")
+	}
+}
+
+func TestBackwardClockDocs(t *testing.T) {
+	keyed := flattenDoc(exportedTypeDoc(t, "ratelimit.go", "Keyed"))
+	for _, phrase := range []string{
+		"always refills",
+		"elapsed*rate",
+		"dns's limiter",
+		"only when elapsed > 0",
+		"time.Now",
+		"monotonic",
+	} {
+		if !strings.Contains(keyed, phrase) {
+			t.Fatalf("Keyed doc missing %q:\n%s", phrase, keyed)
+		}
+	}
+	global := flattenDoc(exportedTypeDoc(t, "ratelimit.go", "Global"))
+	for _, phrase := range []string{
+		"A negative elapsed adds nothing",
+		"still clamps",
+		"still sets last",
+		"always adds elapsed*rps",
+		"time.Now",
+		"monotonic",
+		"syslog",
+	} {
+		if !strings.Contains(global, phrase) {
+			t.Fatalf("Global doc missing %q:\n%s", phrase, global)
+		}
+	}
+}
+
+func flattenDoc(s string) string {
+	var parts []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "//"))
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func exportedTypeDoc(t *testing.T, filename, typeName string) string {
+	t.Helper()
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	i := strings.Index(text, "type "+typeName+" ")
+	if i < 0 {
+		t.Fatalf("type %s not found", typeName)
+	}
+	lines := strings.Split(text[:i], "\n")
+	var rev []string
+	for n := len(lines) - 1; n >= 0; n-- {
+		line := strings.TrimSpace(lines[n])
+		if line == "" {
+			if len(rev) > 0 {
+				break
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		rev = append(rev, line)
+	}
+	if len(rev) == 0 {
+		t.Fatalf("type %s has no doc comment", typeName)
+	}
+	parts := make([]string, len(rev))
+	for n := range rev {
+		parts[n] = rev[len(rev)-1-n]
+	}
+	return strings.Join(parts, "\n")
+}
+
+func TestGlobalAllowAt(t *testing.T) {
+	var g Global
+	var now time.Time
+	g.SetNow(func() time.Time { return now })
+	allowed := 0
+	for i := 0; i < 70; i++ {
+		if g.AllowAt(-1, -1) {
+			allowed++
+		}
+	}
+	if allowed != 64 {
+		t.Fatalf("<=0 uses 64 burst on that call, allowed %d", allowed)
+	}
+	var g2 Global
+	g2.SetNow(func() time.Time { return now })
+	if !g2.AllowAt(1, 1) {
+		t.Fatal("first")
+	}
+	if g2.AllowAt(1, 1) {
+		t.Fatal("second at the same instant")
+	}
+	now = now.Add(time.Second)
+	if !g2.AllowAt(5, 5) {
+		t.Fatal("rate change between calls refills at the new rate")
+	}
+}
+
+func TestMaxKeysRequired(t *testing.T) {
+	if _, err := NewKeyed(1, 1, ctorNTP(), Options{}); err == nil {
+		t.Fatal("zero options")
+	}
+	k, err := NewKeyed(1, 1, ctorNTP(), opts(DefaultMaxKeys, func() time.Time { return time.Time{} }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.maxKeys != DefaultMaxKeys {
+		t.Fatal(k.maxKeys)
+	}
+}
+
+func TestDefaultMaxKeys(t *testing.T) {
+	if DefaultMaxKeys != 1024 {
+		t.Fatal(DefaultMaxKeys)
+	}
+}
+
+func TestKeyedDeniedKeyStaysMostRecent(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(0.001, 1, ctorNTP(), opts(2, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") || !k.Allow("b") {
+		t.Fatal("seed")
+	}
+	now = now.Add(time.Millisecond)
+	if k.Allow("b") {
+		t.Fatal("b should be denied once its token is spent")
+	}
+	now = now.Add(time.Millisecond)
+	if !k.Allow("c") {
+		t.Fatal("c")
+	}
+	if k.Contains("a") {
+		t.Fatal("the key that went longest without a call was not the victim")
+	}
+	if !k.Contains("b") || !k.Contains("c") {
+		t.Fatal("denied key was evicted")
+	}
+	now = now.Add(time.Millisecond)
+	if k.Allow("b") {
+		t.Fatal("b is still present and still empty")
+	}
+}
+
+func TestKeyedSweepThrottle(t *testing.T) {
+	var now time.Time
+	// cutoff = max(30s, 4*1/100s) = 30s. gap = max(1s, 7.5s) = 7.5s.
+	k, err := NewKeyed(100, 1, ctorNTP(), opts(8, func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !k.Allow("a") {
+		t.Fatal("seed")
+	}
+	if k.SweepCount() != 1 {
+		t.Fatalf("first allow sweeps, got %d", k.SweepCount())
+	}
+	now = now.Add(7*time.Second + 499*time.Millisecond)
+	k.Allow("a")
+	if k.SweepCount() != 1 {
+		t.Fatalf("sweep ran inside the gap: %d", k.SweepCount())
+	}
+	now = now.Add(2 * time.Millisecond)
+	k.Allow("a")
+	if k.SweepCount() != 2 {
+		t.Fatalf("sweep did not run once the gap elapsed: %d", k.SweepCount())
+	}
+	// Many calls inside the next gap add no sweeps.
+	now = now.Add(time.Second)
+	for i := 0; i < 10; i++ {
+		k.Allow("a")
+	}
+	if k.SweepCount() != 2 {
+		t.Fatalf("sweep ran more than once per gap: %d", k.SweepCount())
+	}
+}
+
+func TestKeyed100kDistinctKeys(t *testing.T) {
+	var now time.Time
+	k, err := NewKeyed(10, 10, ctorNTP(), Options{
+		IdleFloor:        time.Hour,
+		IdleRefillFactor: 4,
+		MaxKeys:          1024,
+		Now:              func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const calls = 100000
+	const window = 10000
+	marks := make([]uint64, 0, calls/window)
+	for i := 0; i < calls; i++ {
+		now = now.Add(time.Millisecond)
+		if !k.Allow(strconv.Itoa(i)) && i < 1024 {
+			t.Fatalf("fresh key %d denied", i)
+		}
+		if k.Len() > 1024 {
+			t.Fatalf("len %d after %d", k.Len(), i)
+		}
+		if (i+1)%window == 0 {
+			marks = append(marks, k.Visits())
+		}
+	}
+	if k.Len() > 1024 {
+		t.Fatal(k.Len())
+	}
+	prev := uint64(0)
+	var first float64
+	for i, m := range marks {
+		d := m - prev
+		avg := float64(d) / float64(window)
+		if avg > 3 {
+			t.Fatalf("window %d averaged %f visits per call", i, avg)
+		}
+		if i == 0 {
+			first = float64(d)
+		}
+		if i == len(marks)-1 && float64(d) > 1.5*first {
+			t.Fatalf("last window %d is more than 1.5x the first %f", d, first)
+		}
+		prev = m
+	}
+}
+
+func TestRemoteKeyHostOnly(t *testing.T) {
+	if got := RemoteKey("192.0.2.10:443"); got != "192.0.2.10" {
+		t.Fatal(got)
+	}
+	if got := RemoteKey("[2001:db8::1]:443"); got != "2001:db8::1" {
+		t.Fatal(got)
+	}
+	if got := RemoteKey("192.0.2.10"); got != "192.0.2.10" {
+		t.Fatal(got)
+	}
+}
+
+func BenchmarkKeyed(b *testing.B) {
+	for _, n := range []int{1000, 10000, 100000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			keys := make([]string, n)
+			for i := range keys {
+				keys[i] = strconv.Itoa(i)
+			}
+			k, err := NewKeyed(1e9, 1e9, ctorNTP(), Options{
+				IdleFloor:        time.Hour,
+				IdleRefillFactor: 4,
+				MaxKeys:          n,
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			for i := 0; i < n; i++ {
+				k.Allow(keys[i])
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				k.Allow(keys[i%n])
+			}
+		})
+	}
+}
