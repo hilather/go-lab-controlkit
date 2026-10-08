@@ -84,8 +84,9 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		{"IdentityChangeClearsSessions", func(t *testing.T) { IdentityChangeClearsSessions(t, newIdentity(false)) }, []func(Testing){
 			func(tb Testing) { IdentityChangeClearsSessions(tb, newIdentity(true)) },
 		}},
-		{"DeniedAudited", func(t *testing.T) { DeniedAudited(t, newDenied(false)) }, []func(Testing){
-			func(tb Testing) { DeniedAudited(tb, newDenied(true)) },
+		{"DeniedAudited", func(t *testing.T) { DeniedAudited(t, newDenied("")) }, []func(Testing){
+			func(tb Testing) { DeniedAudited(tb, newDenied("double")) },
+			func(tb Testing) { DeniedAudited(tb, newDenied("empty")) },
 		}},
 		{"DeniedGuardFlood", func(t *testing.T) { DeniedGuardFlood(t, newFlood(false)) }, []func(Testing){
 			func(tb Testing) { DeniedGuardFlood(tb, newFlood(true)) },
@@ -1186,10 +1187,10 @@ type denyRef struct {
 	rec   *audit.CountRecorder
 	guard *audit.DeniedGuard
 	clock time.Time
-	bug   bool
+	bug   string
 }
 
-func newDenied(bug bool) *denyRef {
+func newDenied(bug string) *denyRef {
 	rec := &audit.CountRecorder{}
 	clock := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	g, err := audit.NewDeniedGuard(rec, func() time.Time { return clock })
@@ -1199,27 +1200,64 @@ func newDenied(bug bool) *denyRef {
 	return &denyRef{rec: rec, guard: g, clock: clock, bug: bug}
 }
 
-func (d *denyRef) bump(code, cap string, status int) (int, int) {
+// bump records one denial and returns the row read back from the recorder.
+func (d *denyRef) bump(transport, code, cap string, status int) DenialObs {
 	before := len(d.rec.Events())
-	ev := audit.DeniedEvent{Time: d.clock, ActorID: "ada", ActorClass: "token", Transport: "rest", Capability: cap, ErrorCode: code, RemoteKey: "127.0.0.1"}
+	ev := audit.DeniedEvent{
+		Time: d.clock, ActorID: "ada", ActorClass: "token",
+		Transport: transport, Capability: cap, ErrorCode: code, RemoteKey: "127.0.0.1",
+	}
+	if d.bug == "empty" && code == "bad_bearer" {
+		ev.Transport = ""
+		ev.Capability = ""
+		ev.ErrorCode = ""
+	}
 	d.guard.RecordDenied(context.Background(), ev)
-	if d.bug && code == "bad_bearer" {
+	if d.bug == "double" && code == "bad_bearer" {
 		d.guard.RecordDenied(context.Background(), ev)
 	}
+	row := AuditFields{}
+	evs := d.rec.Events()
+	if len(evs) == before+1 {
+		last := evs[len(evs)-1]
+		row = AuditFields{Transport: last.Transport, Capability: last.Capability, Code: last.ErrorCode}
+	}
 	d.clock = d.clock.Add(time.Second)
-	return status, len(d.rec.Events()) - before
+	return DenialObs{Status: status, Rows: len(evs) - before, Row: row}
 }
+
 func (d *denyRef) Routes(context.Context) []string { return []string{"/v1/state", "/v1/audit"} }
 func (d *denyRef) Tools(context.Context) []string  { return []string{"state_apply"} }
-func (d *denyRef) DenyRoute(_ context.Context, route string) (int, int) {
-	return d.bump("forbidden", route, 403)
+func (d *denyRef) WantRoute(route string) AuditFields {
+	return AuditFields{Transport: "rest", Capability: route, Code: "forbidden"}
 }
-func (d *denyRef) DenyTool(_ context.Context, tool string) (int, int) {
-	return d.bump("forbidden", tool, 403)
+func (d *denyRef) WantTool(tool string) AuditFields {
+	return AuditFields{Transport: "mcp", Capability: tool, Code: "forbidden"}
 }
-func (d *denyRef) BadBearer(context.Context) (int, int)   { return d.bump("bad_bearer", "", 401) }
-func (d *denyRef) StaleCookie(context.Context) (int, int) { return d.bump("session_expired", "", 401) }
-func (d *denyRef) CSRFMiss(context.Context) (int, int)    { return d.bump("csrf_invalid", "", 403) }
+func (d *denyRef) WantBadBearer() AuditFields {
+	return AuditFields{Transport: "rest", Capability: "/v1/session", Code: "bad_bearer"}
+}
+func (d *denyRef) WantStaleCookie() AuditFields {
+	return AuditFields{Transport: "rest", Capability: "/v1/state", Code: "session_expired"}
+}
+func (d *denyRef) WantCSRF() AuditFields {
+	return AuditFields{Transport: "rest", Capability: "/v1/state", Code: "csrf_invalid"}
+}
+func (d *denyRef) DenyRoute(_ context.Context, route string) DenialObs {
+	return d.bump("rest", "forbidden", route, 403)
+}
+func (d *denyRef) DenyTool(_ context.Context, tool string) DenialObs {
+	return d.bump("mcp", "forbidden", tool, 403)
+}
+func (d *denyRef) BadBearer(context.Context) DenialObs {
+	return d.bump("rest", "bad_bearer", "/v1/session", 401)
+}
+func (d *denyRef) StaleCookie(context.Context) DenialObs {
+	return d.bump("rest", "session_expired", "/v1/state", 401)
+}
+func (d *denyRef) CSRFMiss(context.Context) DenialObs {
+	return d.bump("rest", "csrf_invalid", "/v1/state", 403)
+}
 
 type floodRow struct {
 	ID     string

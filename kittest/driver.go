@@ -223,16 +223,38 @@ type IdentityDriver interface {
 	CookieWorks(ctx context.Context, cookie string) bool
 }
 
+// AuditFields is the transport, capability, and code on one denial row.
+type AuditFields struct {
+	Transport  string
+	Capability string
+	Code       string
+}
+
+// DenialObs is one denied call.
+// Rows is how many denial rows that call wrote.
+// Row is the recorded row, read back from the audit log.
+type DenialObs struct {
+	Status int
+	Rows   int
+	Row    AuditFields
+}
+
 // DeniedAuditDriver counts denial rows with the guard not suppressing.
-// Status is the HTTP status. rows is how many denial rows that call wrote.
+// The Want methods are the expected row. The Deny methods return the
+// row that was actually recorded.
 type DeniedAuditDriver interface {
 	Routes(ctx context.Context) []string
 	Tools(ctx context.Context) []string
-	DenyRoute(ctx context.Context, route string) (status int, rows int)
-	DenyTool(ctx context.Context, tool string) (status int, rows int)
-	BadBearer(ctx context.Context) (status int, rows int)
-	StaleCookie(ctx context.Context) (status int, rows int)
-	CSRFMiss(ctx context.Context) (status int, rows int)
+	WantRoute(route string) AuditFields
+	WantTool(tool string) AuditFields
+	WantBadBearer() AuditFields
+	WantStaleCookie() AuditFields
+	WantCSRF() AuditFields
+	DenyRoute(ctx context.Context, route string) DenialObs
+	DenyTool(ctx context.Context, tool string) DenialObs
+	BadBearer(ctx context.Context) DenialObs
+	StaleCookie(ctx context.Context) DenialObs
+	CSRFMiss(ctx context.Context) DenialObs
 }
 
 // FloodDriver floods one denial key and reports an OK row that must survive.

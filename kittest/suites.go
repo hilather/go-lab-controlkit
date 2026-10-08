@@ -409,7 +409,8 @@ func IdentityChangeClearsSessions(t Testing, d IdentityDriver) {
 }
 
 // DeniedAudited checks one denial row per route, tool, bad bearer, stale
-// cookie, and CSRF miss.
+// cookie, and CSRF miss. The row must carry the expected transport,
+// capability, and code.
 func DeniedAudited(t Testing, d DeniedAuditDriver) {
 	t.Helper()
 	ctx := context.Background()
@@ -419,25 +420,23 @@ func DeniedAudited(t Testing, d DeniedAuditDriver) {
 		t.Fatalf("no routes or tools")
 	}
 	for _, route := range routes {
-		status, rows := d.DenyRoute(ctx, route)
-		if status != 403 || rows != 1 {
-			t.Fatalf("route %s status %d rows %d", route, status, rows)
-		}
+		checkDenial(t, "route "+route, 403, d.DenyRoute(ctx, route), d.WantRoute(route))
 	}
 	for _, tool := range tools {
-		status, rows := d.DenyTool(ctx, tool)
-		if status != 403 || rows != 1 {
-			t.Fatalf("tool %s status %d rows %d", tool, status, rows)
-		}
+		checkDenial(t, "tool "+tool, 403, d.DenyTool(ctx, tool), d.WantTool(tool))
 	}
-	if status, rows := d.BadBearer(ctx); status != 401 || rows != 1 {
-		t.Fatalf("bad bearer status %d rows %d", status, rows)
+	checkDenial(t, "bad bearer", 401, d.BadBearer(ctx), d.WantBadBearer())
+	checkDenial(t, "stale cookie", 401, d.StaleCookie(ctx), d.WantStaleCookie())
+	checkDenial(t, "csrf", 403, d.CSRFMiss(ctx), d.WantCSRF())
+}
+
+func checkDenial(t Testing, what string, status int, got DenialObs, want AuditFields) {
+	t.Helper()
+	if want.Transport == "" || want.Capability == "" || want.Code == "" {
+		t.Fatalf("%s: expected row is incomplete: %+v", what, want)
 	}
-	if status, rows := d.StaleCookie(ctx); status != 401 || rows != 1 {
-		t.Fatalf("stale cookie status %d rows %d", status, rows)
-	}
-	if status, rows := d.CSRFMiss(ctx); status != 403 || rows != 1 {
-		t.Fatalf("csrf status %d rows %d", status, rows)
+	if got.Status != status || got.Rows != 1 || got.Row != want {
+		t.Fatalf("%s: got status %d rows %d row %+v want status %d row %+v", what, got.Status, got.Rows, got.Row, status, want)
 	}
 }
 
