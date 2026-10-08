@@ -48,7 +48,8 @@ const (
 	// Star allows any remaining http or https Origin. The entry must be "*".
 	Star Sentinel = iota + 1
 	// Private allows a host that netip reports as private after Unmap
-	// (RFC 1918 and RFC 4193, not CGNAT). The entry matches "private"
+	// (RFC 1918 and RFC 4193, not CGNAT). A zoned address is not private,
+	// matching maildev's net.ParseIP. The entry matches "private"
 	// with EqualFold.
 	Private
 )
@@ -58,12 +59,19 @@ const (
 // LocalhostFold false means "localhost" is case-sensitive.
 // ListUnionsLoopback false means a non-empty allow list replaces loopback;
 // an empty allow list is still loopback http(s) only.
+// ZonedLoopback false, the zero value, means an address with an IPv6 zone
+// is never loopback. That matches net.ParseIP, which ntp, netconf, snmp,
+// maildev and syslog use. True means a zoned IPv6 literal can be loopback,
+// which is netip.ParseAddr. dns sets true.
 // A nil or empty Sentinels list means the allow list has no sentinels.
+// The private sentinel never treats a zoned address as private. maildev
+// classifies with net.ParseIP, and no repo does otherwise.
 type Policy struct {
 	Match              Match
 	HostParse          HostParse
 	LocalhostFold      bool
 	ListUnionsLoopback bool
+	ZonedLoopback      bool
 	Sentinels          []Sentinel
 }
 
@@ -86,7 +94,7 @@ func Check(origin string, allow []string, p Policy) error {
 	if p.HostParse != DNSParse {
 		host = strings.TrimSpace(host)
 	}
-	if loopbackAllowed(p, allow) && isLoopback(host, p.LocalhostFold) {
+	if loopbackAllowed(p, allow) && isLoopback(host, p.LocalhostFold, p.ZonedLoopback) {
 		return nil
 	}
 	for _, entry := range allow {
@@ -178,7 +186,9 @@ func splitDNSHostPort(hostport string) (string, bool) {
 	return hostport[:i], true
 }
 
-func isLoopback(host string, fold bool) bool {
+// allowZone false rejects every IPv6 zone, matching net.ParseIP.
+// true keeps netip.ParseAddr, whose IsLoopback ignores the zone.
+func isLoopback(host string, fold, allowZone bool) bool {
 	if fold {
 		if strings.EqualFold(host, "localhost") {
 			return true
@@ -190,12 +200,17 @@ func isLoopback(host string, fold bool) bool {
 	if err != nil {
 		return false
 	}
+	if addr.Zone() != "" && !allowZone {
+		return false
+	}
 	return addr.Unmap().IsLoopback()
 }
 
+// A zoned address is not private. maildev uses net.ParseIP, which
+// rejects zones. No repo classifies a zoned address as private.
 func isPrivate(host string) bool {
 	addr, err := netip.ParseAddr(strings.TrimSpace(host))
-	if err != nil {
+	if err != nil || addr.Zone() != "" {
 		return false
 	}
 	return addr.Unmap().IsPrivate()

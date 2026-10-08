@@ -15,7 +15,13 @@ func ntpPolicy() Policy {
 }
 
 func dnsPolicy() Policy {
-	return Policy{Match: ExactCaseSensitive, HostParse: DNSParse, LocalhostFold: true, ListUnionsLoopback: true}
+	return Policy{
+		Match:              ExactCaseSensitive,
+		HostParse:          DNSParse,
+		LocalhostFold:      true,
+		ListUnionsLoopback: true,
+		ZonedLoopback:      true,
+	}
 }
 
 func syslogPolicy() Policy {
@@ -349,6 +355,249 @@ func fiveGoldenLoopback(host string, fold bool) bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
+}
+
+// maildevGoldenAllowed is maildev CheckOrigin
+// (src-v5/maildev/internal/auth/origin.go). Loopback is unioned and
+// "localhost" is case-sensitive, as in ntp. "*" and "private" are
+// sentinels. Private uses net.ParseIP, so a zone is never private.
+func maildevGoldenAllowed(origin string, allow []string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	host := u.Hostname()
+	if fiveGoldenLoopback(host, false) {
+		return true
+	}
+	for _, allowed := range allow {
+		raw := strings.TrimSpace(allowed)
+		switch {
+		case raw == "*":
+			return true
+		case strings.EqualFold(raw, "private") && maildevGoldenPrivate(host):
+			return true
+		default:
+			got := strings.TrimRight(strings.TrimSpace(origin), "/")
+			want := strings.TrimRight(strings.TrimSpace(allowed), "/")
+			if strings.EqualFold(got, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func maildevGoldenPrivate(host string) bool {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsPrivate()
+}
+
+// urlZonedGoldenAllowed is ntp CheckOrigin with dns's netip loopback
+// classifier. That is URLParse with ZonedLoopback set. No repo selects
+// this pair. dns sets the flag together with DNSParse.
+func urlZonedGoldenAllowed(origin string, allow []string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	if ntpNetipLoopback(u.Hostname()) {
+		return true
+	}
+	for _, allowed := range allow {
+		got := strings.TrimRight(strings.TrimSpace(origin), "/")
+		want := strings.TrimRight(strings.TrimSpace(allowed), "/")
+		if strings.EqualFold(got, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// ntp keeps "localhost" case-sensitive. dnsGoldenLoopback folds it and
+// accepts a zone, which is the ZonedLoopback classifier.
+func ntpNetipLoopback(host string) bool {
+	h := strings.TrimSpace(host)
+	if h == "localhost" {
+		return true
+	}
+	if strings.EqualFold(h, "localhost") {
+		return false
+	}
+	return dnsGoldenLoopback(h)
+}
+
+// dnsUnzonedGoldenAllowed is dns CheckOrigin with net.ParseIP's loopback
+// rule. That is DNSParse with ZonedLoopback left false.
+func dnsUnzonedGoldenAllowed(origin string, extra []string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	host, ok := dnsGoldenHost(origin)
+	if !ok {
+		return false
+	}
+	if dnsNetIPLoopback(host) {
+		return true
+	}
+	for _, a := range extra {
+		if origin == a {
+			return true
+		}
+	}
+	return false
+}
+
+// dnsNetIPLoopback is dns isLoopbackHost with net.ParseIP. The host is
+// not space-trimmed. A zone is never loopback. localhost is folded.
+func dnsNetIPLoopback(host string) bool {
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func TestOriginZonedAddresses(t *testing.T) {
+	if ntpPolicy().ZonedLoopback || syslogPolicy().ZonedLoopback || maildevPolicy().ZonedLoopback {
+		t.Fatal("ZonedLoopback zero is the five")
+	}
+	if !dnsPolicy().ZonedLoopback {
+		t.Fatal("dns sets ZonedLoopback")
+	}
+
+	origins := []string{
+		"http://[::1%25eth0]:8080",
+		"http://[::1%25eth0]",
+		"https://[::1%25lo]",
+		"http://[::1%eth0]:8080",
+		"http://[::1%25]",
+		"http://[fe80::1%25eth0]:8080",
+		"http://[fe80::1%25eth0]",
+		"http://[fe80::1%251]",
+		"http://[::ffff:127.0.0.1%25eth0]",
+		"http://[::ffff:127.0.0.1%25eth0]:8080",
+		"https://[::ffff:127.0.0.1%25lo]",
+		"http://[::ffff:7f00:1%25eth0]",
+		"http://[::1]:8080",
+		"http://[::1]",
+		"http://[fe80::1]:8080",
+		"http://[::ffff:127.0.0.1]",
+		"http://[::ffff:127.0.0.1]:8080",
+	}
+	allows := [][]string{
+		nil,
+		{"https://other.example"},
+		{"http://[::1%25eth0]:8080"},
+	}
+	urlOn := ntpPolicy()
+	urlOn.ZonedLoopback = true
+	dnsOff := dnsPolicy()
+	dnsOff.ZonedLoopback = false
+	policies := []struct {
+		name string
+		p    Policy
+		want func(string, []string) bool
+	}{
+		{"ntp", ntpPolicy(), func(origin string, allow []string) bool {
+			return fiveGoldenAllowed(origin, allow, true, false)
+		}},
+		{"syslog", syslogPolicy(), func(origin string, allow []string) bool {
+			return fiveGoldenAllowed(origin, allow, false, true)
+		}},
+		{"maildev", maildevPolicy(), maildevGoldenAllowed},
+		{"dns", dnsPolicy(), dnsGoldenAllowed},
+		{"url-zoned", urlOn, urlZonedGoldenAllowed},
+		{"dns-unzoned", dnsOff, dnsUnzonedGoldenAllowed},
+	}
+	for _, pol := range policies {
+		for _, origin := range origins {
+			for _, allow := range allows {
+				err := Check(origin, allow, pol.p)
+				got := err == nil
+				want := pol.want(origin, allow)
+				if got != want {
+					t.Errorf("%s origin %q allow %#v got %v want %v err %v", pol.name, origin, allow, got, want, err)
+				}
+			}
+		}
+	}
+}
+
+func TestOriginZonedPrivate(t *testing.T) {
+	origins := []string{
+		"http://[fd12:3456::1%25eth0]:1080",
+		"http://[fc00::1%25eth0]",
+		"http://[::ffff:192.168.1.9%25eth0]:1080",
+		"http://[::ffff:10.1.2.3%25eth0]",
+		"http://[fe80::1%25eth0]:8080",
+		"http://[::1%25eth0]:8080",
+		"http://[::ffff:127.0.0.1%25eth0]",
+		"http://[fd12:3456::1]:1080",
+		"http://[fc00::1]",
+		"http://[::ffff:192.168.1.9]:1080",
+		"http://192.168.1.9",
+		"http://10.1.2.3:1080",
+		"http://[fe80::1]:8080",
+		"http://8.8.8.8",
+		"http://100.64.0.1",
+		"http://169.254.1.1",
+	}
+	allows := [][]string{{"private"}, {"Private"}}
+	for _, origin := range origins {
+		for _, allow := range allows {
+			err := Check(origin, allow, maildevPolicy())
+			got := err == nil
+			want := maildevGoldenAllowed(origin, allow)
+			if got != want {
+				t.Errorf("maildev origin %q allow %#v got %v want %v err %v", origin, allow, got, want, err)
+			}
+		}
+	}
+
+	// ZonedLoopback does not make a zoned address private. These hosts
+	// are not loopback under either classifier, so the flag cannot
+	// admit them. maildev's net.ParseIP denies the zoned ones.
+	on := maildevPolicy()
+	on.ZonedLoopback = true
+	nonLoop := []string{
+		"http://[fd12:3456::1%25eth0]:1080",
+		"http://[fc00::1%25eth0]",
+		"http://[::ffff:192.168.1.9%25eth0]:1080",
+		"http://[::ffff:10.1.2.3%25eth0]",
+		"http://[fe80::1%25eth0]:8080",
+		"http://[fd12:3456::1]:1080",
+		"http://[::ffff:192.168.1.9]:1080",
+		"http://[fe80::1]:8080",
+	}
+	for _, origin := range nonLoop {
+		for _, allow := range allows {
+			err := Check(origin, allow, on)
+			got := err == nil
+			want := maildevGoldenAllowed(origin, allow)
+			if got != want {
+				t.Errorf("zoned flag origin %q allow %#v got %v want %v err %v", origin, allow, got, want, err)
+			}
+		}
+	}
 }
 
 func kindIs(err error, k kerr.Kind) bool {
