@@ -1,7 +1,9 @@
 package ratelimit
 
 import (
+	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -222,6 +224,111 @@ func TestIdleCutoffFollowsSetRate(t *testing.T) {
 	if k.Contains("idle") {
 		t.Fatal("idle key survived past the cutoff recomputed after SetRate")
 	}
+}
+
+func TestGlobalSkipsNegativeElapsed(t *testing.T) {
+	var now time.Time
+	var g Global
+	g.SetNow(func() time.Time { return now })
+	// Burst 5, rate 10. One allow leaves 4. A one-second step backward
+	// would subtract 10 if Global added elapsed the way syslog does.
+	if !g.AllowAt(10, 5) {
+		t.Fatal("seed")
+	}
+	now = now.Add(-time.Second)
+	if !g.AllowAt(10, 5) {
+		t.Fatal("backward step subtracted tokens")
+	}
+	// Same timestamp, smaller burst: still clamp, then one token remains
+	// spendable and the next call is denied.
+	if !g.AllowAt(10, 1) {
+		t.Fatal("backward step did not clamp")
+	}
+	if g.AllowAt(10, 1) {
+		t.Fatal("clamp left more than one token")
+	}
+	// last moved to the backward timestamp, so one second forward refills.
+	now = now.Add(time.Second)
+	if !g.AllowAt(10, 1) {
+		t.Fatal("backward step did not update last")
+	}
+}
+
+func TestBackwardClockDocs(t *testing.T) {
+	keyed := flattenDoc(exportedTypeDoc(t, "ratelimit.go", "Keyed"))
+	for _, phrase := range []string{
+		"always refills",
+		"elapsed*rate",
+		"dns's limiter",
+		"only when elapsed > 0",
+		"time.Now",
+		"monotonic",
+	} {
+		if !strings.Contains(keyed, phrase) {
+			t.Fatalf("Keyed doc missing %q:\n%s", phrase, keyed)
+		}
+	}
+	global := flattenDoc(exportedTypeDoc(t, "ratelimit.go", "Global"))
+	for _, phrase := range []string{
+		"A negative elapsed adds nothing",
+		"still clamps",
+		"still sets last",
+		"always adds elapsed*rps",
+		"time.Now",
+		"monotonic",
+		"syslog",
+	} {
+		if !strings.Contains(global, phrase) {
+			t.Fatalf("Global doc missing %q:\n%s", phrase, global)
+		}
+	}
+}
+
+func flattenDoc(s string) string {
+	var parts []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "//"))
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func exportedTypeDoc(t *testing.T, filename, typeName string) string {
+	t.Helper()
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	i := strings.Index(text, "type "+typeName+" ")
+	if i < 0 {
+		t.Fatalf("type %s not found", typeName)
+	}
+	lines := strings.Split(text[:i], "\n")
+	var rev []string
+	for n := len(lines) - 1; n >= 0; n-- {
+		line := strings.TrimSpace(lines[n])
+		if line == "" {
+			if len(rev) > 0 {
+				break
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		rev = append(rev, line)
+	}
+	if len(rev) == 0 {
+		t.Fatalf("type %s has no doc comment", typeName)
+	}
+	parts := make([]string, len(rev))
+	for n := range rev {
+		parts[n] = rev[len(rev)-1-n]
+	}
+	return strings.Join(parts, "\n")
 }
 
 func TestGlobalAllowAt(t *testing.T) {

@@ -1,7 +1,8 @@
 // Package ratelimit is the management-plane token bucket.
 //
 // Keyed is a per-key limiter with a required cap. There is no uncapped mode.
-// Global is one bucket whose rate is supplied on each call.
+// Global is one bucket whose rate is supplied on each call. It skips a
+// backward step; syslog's bucket does not. See Global.
 package ratelimit
 
 import (
@@ -74,6 +75,13 @@ type Options struct {
 }
 
 // Keyed is a per-key token bucket.
+//
+// Allow always refills: it adds elapsed*rate, including a negative elapsed,
+// then clamps to the current burst and sets last to now. That is the ntp,
+// snmp, and maildev management limiters. dns's limiter refills, clamps, and
+// updates last only when elapsed > 0, as do the dns and ntp query limiters
+// and snmp's data-plane query limiters. Production uses time.Now, which is
+// monotonic, so the difference shows only with a non-monotonic injected clock.
 //
 // The idle cutoff is max(IdleFloor, IdleRefillFactor*burst/rate), recomputed
 // from the current rate and burst at each sweep. The sweep runs at most once
@@ -203,10 +211,10 @@ func (k *Keyed) Allow(key string) bool {
 		b.elem = k.order.PushBack(b)
 		k.buckets[key] = b
 	} else {
-		// ntp, snmp, and maildev always add elapsed*rate, including a
-		// backward step, and always clamp to the current burst. A SetRate
-		// that lowers burst therefore applies on the next Allow at the
-		// same timestamp. dns refills only when elapsed > 0.
+		// Always refill: add elapsed*rate even when elapsed is negative, then
+		// clamp and set last. A SetRate that lowers burst therefore applies
+		// on the next Allow at the same timestamp. dns's limiter refills
+		// only when elapsed > 0. See Keyed.
 		elapsed := now.Sub(b.last).Seconds()
 		b.tokens += elapsed * k.rate
 		if b.tokens > k.burst {
@@ -350,6 +358,12 @@ func (k *Keyed) removeLocked(b *bucket) {
 }
 
 // Global is one token bucket. It stores no rate. The zero value is usable.
+//
+// A negative elapsed adds nothing. AllowAt still clamps to that call's
+// burst and still sets last to now. syslog's global bucket always adds
+// elapsed*rps, including a backward step. Production uses time.Now, which
+// is monotonic, so the difference shows only with a non-monotonic injected
+// clock.
 type Global struct {
 	mu      sync.Mutex
 	tokens  float64
@@ -371,6 +385,8 @@ func (g *Global) SetNow(now func() time.Time) {
 // AllowAt consumes one token using the rate and burst of this call.
 // A rate of 0 or below uses 32 on this call. A burst of 0 or below uses 64
 // on this call. Those substitutions are not stored.
+// A negative elapsed adds nothing. The call still clamps and updates last.
+// syslog's bucket always adds elapsed*rps. See Global.
 func (g *Global) AllowAt(rate, burst float64) bool {
 	if g == nil {
 		return false
