@@ -55,6 +55,9 @@ type Config struct {
 // LoadError is a token-load failure. Facades render Msg, Code, and Field into
 // the repo's wire sentence. The kit sentence in Msg matches the syslog wording
 // for per-token files so a facade can use Error() directly.
+// TokenIndex is the token slot, starting at 0. The zero value is slot 0.
+// Errors that are not a token slot set it to -1. withPrefix fills
+// tokens[i].secretFile only when the index was set (>= 0) and Field is empty.
 type LoadError struct {
 	Kind       kerr.Kind
 	Code       string
@@ -225,10 +228,11 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 	}()
 	if cfg.Mode != ModeBearer && cfg.Mode != ModeDevLoopbackUnauth && cfg.Mode != ModeBearerAndBasic {
 		return nil, &LoadError{
-			Kind:  kerr.Invalid,
-			Code:  "invalid_value",
-			Field: joinField(cfg.PathPrefix, "mode"),
-			Msg:   fmt.Sprintf("%s must be bearer, got %q", joinField(cfg.PathPrefix, "mode"), cfg.Mode.String()),
+			Kind:       kerr.Invalid,
+			Code:       "invalid_value",
+			TokenIndex: -1,
+			Field:      joinField(cfg.PathPrefix, "mode"),
+			Msg:        fmt.Sprintf("%s must be bearer, got %q", joinField(cfg.PathPrefix, "mode"), cfg.Mode.String()),
 		}
 	}
 	seenDigest := map[[32]byte]string{}
@@ -328,7 +332,7 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 		if len(pw) == 0 {
 			cfg.Basic.Password.Zero()
 			return nil, &LoadError{
-				Kind: kerr.Invalid, Code: "required",
+				Kind: kerr.Invalid, Code: "required", TokenIndex: -1,
 				Field: joinField(cfg.PathPrefix, "basic.passwordFile"),
 				Msg:   "basic password is empty",
 			}
@@ -338,7 +342,7 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 		idx, ok := seenID[strings.TrimSpace(cfg.Basic.TokenRef)]
 		if !ok {
 			return nil, &LoadError{
-				Kind: kerr.Invalid, Code: "unresolved_reference",
+				Kind: kerr.Invalid, Code: "unresolved_reference", TokenIndex: -1,
 				Field: joinField(cfg.PathPrefix, "basic.tokenRef"),
 				Msg:   "basic.tokenRef does not match a token id",
 			}
@@ -542,6 +546,7 @@ func withPrefix(cfg Config, err error) error {
 	if !errorsAsLoad(err, &le) || le.Field != "" || cfg.PathPrefix == "" {
 		return err
 	}
+	// TokenIndex -1 is not a slot. The zero value 0 is slot 0 and is filled.
 	if le.File != "" && le.TokenIndex >= 0 && le.Code != "" && le.Field == "" {
 		le.Field = tokenField(cfg.PathPrefix, le.TokenIndex, "secretFile")
 	}

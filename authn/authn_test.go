@@ -614,9 +614,14 @@ func TestDNSBundle(t *testing.T) {
 		t.Fatalf("first match %+v %v", p, err)
 	}
 
-	_, err = Load(Config{Mode: ModeBearer, Duplicates: FirstMatchWins, DNSDefaults: defs, Source: DNSBundle(nil, filepath.Join(dir, "absent"), opts)})
+	absent := filepath.Join(dir, "absent")
+	_, err = Load(Config{
+		Mode: ModeBearer, Duplicates: FirstMatchWins, DNSDefaults: defs,
+		PathPrefix: "spec.management.auth",
+		Source:     DNSBundle(nil, absent, opts),
+	})
 	le := mustAs(t, err)
-	if le.Error() != "token secret is unavailable" || le.Kind != kerr.Unavailable {
+	if le.Error() != "token secret is unavailable" || le.Kind != kerr.Unauthenticated || le.TokenIndex != -1 || le.Field != "" {
 		t.Fatalf("missing %+v", le)
 	}
 }

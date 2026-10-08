@@ -326,7 +326,7 @@ func (s *dnsSource) Read() ([]RawToken, []FileResult, error) {
 			readErr = os.ErrNotExist
 		}
 		return toks, files, &LoadError{
-			Kind: kerr.Unavailable, Code: "unresolved_reference", File: s.ref,
+			Kind: kerr.Unauthenticated, Code: "unresolved_reference", TokenIndex: -1, File: s.ref,
 			Err: readErr, Msg: "token secret is unavailable",
 		}
 	}
@@ -349,7 +349,7 @@ type dnsJSONToken struct {
 func parseDNSBody(raw []byte) ([]RawToken, error) {
 	s := bytes.TrimSpace(raw)
 	if len(s) == 0 {
-		return nil, &LoadError{Kind: kerr.Invalid, Code: "required", Field: "secretRef", Msg: "token secret is empty"}
+		return nil, &LoadError{Kind: kerr.Invalid, Code: "required", TokenIndex: -1, Field: "secretRef", Msg: "token secret is empty"}
 	}
 	if s[0] == '{' || s[0] == '[' {
 		var wrap struct {
@@ -362,11 +362,11 @@ func parseDNSBody(raw []byte) ([]RawToken, error) {
 		if err := json.Unmarshal(s, &arr); err == nil && len(arr) > 0 {
 			return dnsTokens(arr), nil
 		}
-		return nil, &LoadError{Kind: kerr.Invalid, Code: "invalid_value", Field: "secretRef", Msg: "token secret JSON is invalid"}
+		return nil, &LoadError{Kind: kerr.Invalid, Code: "invalid_value", TokenIndex: -1, Field: "secretRef", Msg: "token secret JSON is invalid"}
 	}
 	line, err := firstUsableLine(s)
 	if err != nil {
-		return nil, &LoadError{Kind: kerr.Invalid, Code: "required", Field: "secretRef", Msg: "token secret is empty", Err: err}
+		return nil, &LoadError{Kind: kerr.Invalid, Code: "required", TokenIndex: -1, Field: "secretRef", Msg: "token secret is empty", Err: err}
 	}
 	defer zero(line)
 	return []RawToken{{
@@ -420,12 +420,12 @@ func readPassword(b *BasicSpec, prefix string) ([]FileResult, Secret, error) {
 	field := joinField(prefix, "basic.passwordFile")
 	if firstErr == nil || errors.Is(firstErr, os.ErrInvalid) {
 		return out, Secret{}, &LoadError{
-			Kind: kerr.Invalid, Code: "required", Field: field, File: b.PasswordFile,
+			Kind: kerr.Invalid, Code: "required", TokenIndex: -1, Field: field, File: b.PasswordFile,
 			Err: firstErr, Msg: "basic password is empty",
 		}
 	}
 	return out, Secret{}, &LoadError{
-		Kind: kerr.Invalid, Code: "unresolved_reference", Field: field, File: b.PasswordFile,
+		Kind: kerr.Invalid, Code: "unresolved_reference", TokenIndex: -1, Field: field, File: b.PasswordFile,
 		Err: firstErr, Msg: "basic password file does not resolve: " + b.PasswordFile,
 	}
 }
