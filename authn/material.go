@@ -37,7 +37,11 @@ type DNSDefaults struct {
 // Basic nil means Basic is off.
 // DNSDefaults nil means empty ids and roles are not rewritten.
 type Config struct {
-	Mode                Mode
+	Mode Mode
+	// ModeText is the spec mode string quoted by the unknown-mode load error
+	// (`must be bearer, got %q`). Empty quotes Mode.String(). It is not part
+	// of SpecHash: a successful load has already parsed Mode.
+	ModeText            string
 	Source              TokenSource
 	Duplicates          DupPolicy
 	MinSecretBytes      int
@@ -227,12 +231,16 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 		}
 	}()
 	if cfg.Mode != ModeBearer && cfg.Mode != ModeDevLoopbackUnauth && cfg.Mode != ModeBearerAndBasic {
+		got := cfg.ModeText
+		if got == "" {
+			got = cfg.Mode.String()
+		}
 		return nil, &LoadError{
 			Kind:       kerr.Invalid,
 			Code:       "invalid_value",
 			TokenIndex: -1,
 			Field:      joinField(cfg.PathPrefix, "mode"),
-			Msg:        fmt.Sprintf("%s must be bearer, got %q", joinField(cfg.PathPrefix, "mode"), cfg.Mode.String()),
+			Msg:        fmt.Sprintf("%s must be bearer, got %q", joinField(cfg.PathPrefix, "mode"), got),
 		}
 	}
 	seenDigest := map[[32]byte]string{}

@@ -270,10 +270,15 @@ func TestSyslogLoadErrorSentences(t *testing.T) {
 	opts := FileOpts{Line: WholeFileTrim, Resolve: AsGiven}
 	prefix := "spec.auth"
 
-	_, err := Load(Config{Mode: ModeUnknown, Source: Memory(nil), Duplicates: RejectDuplicateValue, PathPrefix: prefix})
+	_, err := Load(Config{Mode: ModeUnknown, ModeText: "ldap", Source: Memory(nil), Duplicates: RejectDuplicateValue, PathPrefix: prefix})
 	le := mustAs(t, err)
-	if le.Error() != `spec.auth.mode must be bearer, got "unknown"` || le.Field != "spec.auth.mode" || le.Code != "invalid_value" {
-		t.Fatalf("mode: %+v", le)
+	if le.Error() != `spec.auth.mode must be bearer, got "ldap"` || le.Field != "spec.auth.mode" || le.Code != "invalid_value" {
+		t.Fatalf("ldap: %+v", le)
+	}
+	_, err = Load(Config{Mode: ModeUnknown, ModeText: "Bearer", Source: Memory(nil), Duplicates: RejectDuplicateValue, PathPrefix: prefix})
+	le = mustAs(t, err)
+	if le.Error() != `spec.auth.mode must be bearer, got "Bearer"` || le.Field != "spec.auth.mode" || le.Code != "invalid_value" {
+		t.Fatalf("Bearer: %+v", le)
 	}
 
 	_, err = Load(Config{Mode: ModeBearer, Source: Memory([]RawToken{raw("", "administrator", "x")}), Duplicates: RejectDuplicateValue, PathPrefix: prefix})
