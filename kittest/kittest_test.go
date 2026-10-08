@@ -66,8 +66,13 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, bootMulti, "message")) },
 			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, bootPin, "off-zero")) },
 		}},
-		{"StreamRevocation", func(t *testing.T) { StreamRevocation(t, newStream("")) }, []func(Testing){
+		{"StreamRevocation", func(t *testing.T) {
+			StreamRevocation(t, newStream(""))
+			StreamRevocation(t, newStream("wrote-open"))
+		}, []func(Testing){
 			func(tb Testing) { StreamRevocation(tb, newStream("delete")) },
+			func(tb Testing) { StreamRevocation(tb, newStream("wrote-end")) },
+			func(tb Testing) { StreamRevocation(tb, newStream("stay-ended")) },
 		}},
 		{"ManagementRebindOverAPI", func(t *testing.T) {
 			for _, v := range []RebindVariant{RebindMove, RebindOff, RebindTaken, RebindSame, RebindRefuse, RebindKeep} {
@@ -946,6 +951,15 @@ func (d *streamRef) Run(_ context.Context, kind StreamKind, trigger string) Stre
 	case <-time.After(500 * time.Millisecond):
 	}
 	end.WithinBudget = time.Since(start) < 500*time.Millisecond
+	if d.bug == "wrote-open" && !end.Ended {
+		end.WroteAfter = true
+	}
+	if d.bug == "wrote-end" && end.Ended {
+		end.WroteAfter = true
+	}
+	if d.bug == "stay-ended" && !end.Ended {
+		end.Ended = true
+	}
 	return end
 }
 

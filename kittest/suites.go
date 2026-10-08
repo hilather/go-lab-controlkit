@@ -317,8 +317,17 @@ func StreamRevocation(t Testing, d StreamDriver) {
 	}
 	for _, row := range matrix {
 		got := d.Run(ctx, row.kind, row.trigger)
-		if got.Ended != row.end || got.WroteAfter || !got.WithinBudget || !got.Rechecked {
-			t.Fatalf("%s %s: %+v want ended %v", row.kind, row.trigger, got, row.end)
+		if row.end {
+			// Ending rows finish inside 500 ms and write no further event.
+			if !got.Ended || got.WroteAfter || !got.WithinBudget || !got.Rechecked {
+				t.Fatalf("%s %s: %+v want ended", row.kind, row.trigger, got)
+			}
+			continue
+		}
+		// Stay-open rows are rechecked and stay open. A demotion that
+		// keeps the scope may still write an event, such as store.wiped.
+		if got.Ended || !got.Rechecked {
+			t.Fatalf("%s %s: %+v want open and rechecked", row.kind, row.trigger, got)
 		}
 	}
 	if d.MCPGet(ctx) != 405 {
