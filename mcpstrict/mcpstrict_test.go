@@ -362,6 +362,66 @@ func TestCheckOpenWideMask(t *testing.T) {
 	}
 }
 
+// TestCheckOpenSiblingMaskClear checks that childMask zeros every word
+// of the scratch mask siblings share. "/a/*" is live under "a"; without
+// that clear the star validator also runs on /b/x. The wide subtest puts
+// /a/* in the second mask word, so clearing only the first word fails.
+func TestCheckOpenSiblingMaskClear(t *testing.T) {
+	t.Run("one-word", func(t *testing.T) {
+		checkStarNotCalledOnSibling(t, 0)
+	})
+	// 64 patterns sort before /a/*, so its bit is in the second mask word.
+	// Zeroing only the first word would still call /a/* for /b/x.
+	t.Run("wide", func(t *testing.T) {
+		checkStarNotCalledOnSibling(t, 64)
+	})
+}
+
+func checkStarNotCalledOnSibling(t *testing.T, dummies int) {
+	t.Helper()
+	var star []string
+	bx := 0
+	open := make(map[string]func(json.RawMessage) error, dummies+2)
+	for i := 0; i < dummies; i++ {
+		open[fmt.Sprintf("/0%04d/y", i)] = func(json.RawMessage) error {
+			return errors.New("dummy pattern matched")
+		}
+	}
+	open["/a/*"] = func(m json.RawMessage) error {
+		star = append(star, string(m))
+		return nil
+	}
+	open["/b/x"] = func(m json.RawMessage) error {
+		bx++
+		if string(m) != "2" {
+			t.Errorf("/b/x raw %s", m)
+		}
+		return nil
+	}
+	before := 0
+	for pattern := range open {
+		if pattern < "/a/*" {
+			before++
+		}
+	}
+	if before != dummies {
+		t.Fatalf("%d patterns sort before /a/*, want %d", before, dummies)
+	}
+	if dummies >= 64 && len(open) <= 64 {
+		t.Fatalf("patterns %d", len(open))
+	}
+	err := Check([]byte(`{"a":{"x":1},"b":{"x":2}}`), Spec{Open: open})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(star) != 1 || star[0] != "1" {
+		t.Fatalf("/a/* calls %q, want only the value at /a/x", star)
+	}
+	if bx != 1 {
+		t.Fatalf("/b/x calls %d", bx)
+	}
+}
+
 func TestCheckDocReusedPathBuffer(t *testing.T) {
 	doc := strings.Join(strings.Fields(funcDoc(t, "mcpstrict.go", "Check")), " ")
 	for _, phrase := range []string{

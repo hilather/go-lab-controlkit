@@ -660,8 +660,9 @@ func (p *parser) parseArray(parent []uint64, depth int, descend bool) error {
 }
 
 // childMask writes the patterns still live under this key or index into
-// the scratch word slice for depth+1. Siblings reuse that slice; the
-// caller passes the result into the child and does not read it again.
+// the scratch word slice for depth+1. Siblings reuse that slice, so it
+// is zeroed first; the caller passes the result into the child and does
+// not read it again.
 func (p *parser) childMask(parent []uint64, depth int, key string, index int, byKey bool) []uint64 {
 	p.ensureMask(depth + 1)
 	child := p.mask[depth+1]
