@@ -264,6 +264,10 @@ func TestCSRFReadBackDoesNotSlide(t *testing.T) {
 	if !ok {
 		t.Fatal("lookup")
 	}
+	// Lookup already stamped LastSeen. Move the clock before CSRF so a
+	// slide writes a later time: View's LastSeen would change, and the
+	// row would still be live after the unslid idle deadline below.
+	*now = now.Add(time.Minute)
 	csrf, ok = s.CSRF(iss.Cookie)
 	if !ok || csrf != iss.CSRF {
 		t.Fatal("csrf after lookup")
