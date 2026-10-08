@@ -1,8 +1,10 @@
 package mcpstrict
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -100,6 +102,124 @@ func TestCheckOpenValidator(t *testing.T) {
 	}
 	if err := Check([]byte(`{"other":1}`), spec); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckStringDecodeMatchesEncodingJSON(t *testing.T) {
+	// An unpaired surrogate does not consume the following \uXXXX.
+	// "\ud800\u0041" and "\ufffdA" are one key. "\ud800\u0041" and "\ufffd" are two.
+	dup := []byte(`{"\ud800\u0041":1,"\ufffdA":1}`)
+	err := Check(dup, Spec{})
+	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatal(err)
+	}
+	if err := Check([]byte(`{"\ud800\u0041":1,"\ufffd":1}`), Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	lone := []byte(`{"\ud800":1,"\ufffd":1}`)
+	err = Check(lone, Spec{})
+	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatal(err)
+	}
+	if err := Check([]byte(`{"\uD800\uDC00":1,"\ufffd":1}`), Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	// Invalid UTF-8 is coerced to U+FFFD, so it collides with \uFFFD and is not invalid json.
+	raw := []byte("{\"a\xff\":1,\"a\\uFFFD\":1}")
+	err = Check(raw, Spec{})
+	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatal(err)
+	}
+	if err := Check([]byte("{\"a\xff\":1}"), Spec{}); err != nil {
+		t.Fatalf("invalid utf-8 rejected: %v", err)
+	}
+	for _, raw := range [][]byte{
+		dup, lone, raw,
+		[]byte(`{"\ud800\u0041":1,"\ufffd":1}`),
+		[]byte(`{"\uD800\uDC00":1,"\ufffd":1}`),
+		[]byte("{\"a\xff\":1}"),
+		[]byte(`{"a":1,"\u0061":2}`),
+	} {
+		want, parsed := jsonKeyCollision(raw)
+		if !parsed {
+			t.Fatalf("oracle rejected %q", raw)
+		}
+		err := Check(raw, Spec{})
+		got := err != nil && strings.Contains(err.Error(), "duplicate key")
+		if got != want {
+			t.Fatalf("raw %q check %v oracle dup %v", raw, err, want)
+		}
+	}
+}
+
+// jsonKeyCollision reports whether decoding object keys with encoding/json
+// yields a collision. parsed is false when encoding/json rejects the input.
+func jsonKeyCollision(raw []byte) (dup bool, parsed bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	dup, ok := walkJSONValue(dec)
+	if !ok {
+		return false, false
+	}
+	if dup {
+		return true, true
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return false, false
+	}
+	return false, true
+}
+
+func walkJSONValue(dec *json.Decoder) (bool, bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return false, false
+	}
+	d, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return false, true
+	}
+	switch d {
+	case '{':
+		seen := map[string]struct{}{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return false, false
+			}
+			key, isStr := kt.(string)
+			if !isStr {
+				return false, false
+			}
+			if _, exists := seen[key]; exists {
+				return true, true
+			}
+			seen[key] = struct{}{}
+			dup, ok := walkJSONValue(dec)
+			if !ok || dup {
+				return dup, ok
+			}
+		}
+		end, err := dec.Token()
+		if err != nil || end != json.Delim('}') {
+			return false, false
+		}
+		return false, true
+	case '[':
+		for dec.More() {
+			dup, ok := walkJSONValue(dec)
+			if !ok || dup {
+				return dup, ok
+			}
+		}
+		end, err := dec.Token()
+		if err != nil || end != json.Delim(']') {
+			return false, false
+		}
+		return false, true
+	default:
+		return false, false
 	}
 }
 

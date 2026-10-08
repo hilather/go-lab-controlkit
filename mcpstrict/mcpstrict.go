@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"unicode/utf16"
-	"unicode/utf8"
 
 	"github.com/hilather/go-lab-controlkit/kerr"
 )
@@ -296,84 +294,50 @@ func (p *parser) parseArray(path string, raws map[string]json.RawMessage, depth 
 	}
 }
 
+// parseString returns the key encoding/json would decode.
+// The quoted slice is handed to json.Unmarshal so an unpaired surrogate
+// becomes U+FFFD without consuming the next \uXXXX, and invalid UTF-8
+// bytes become U+FFFD. Check then agrees with the SDK on which keys collide.
 func (p *parser) parseString() (string, error) {
 	if p.i >= len(p.b) || p.b[p.i] != '"' {
 		return "", invalid("mcpstrict: string expected")
 	}
+	start := p.i
 	p.i++
-	var b strings.Builder
 	for p.i < len(p.b) {
 		c := p.b[p.i]
 		if c == '"' {
 			p.i++
-			return b.String(), nil
+			var s string
+			if err := json.Unmarshal(p.b[start:p.i], &s); err != nil {
+				return "", invalid("mcpstrict: bad string")
+			}
+			return s, nil
 		}
 		if c == '\\' {
 			p.i++
 			if p.i >= len(p.b) {
 				return "", invalid("mcpstrict: bad escape")
 			}
-			esc := p.b[p.i]
-			p.i++
-			switch esc {
-			case '"', '\\', '/':
-				b.WriteByte(esc)
-			case 'b':
-				b.WriteByte('\b')
-			case 'f':
-				b.WriteByte('\f')
-			case 'n':
-				b.WriteByte('\n')
-			case 'r':
-				b.WriteByte('\r')
-			case 't':
-				b.WriteByte('\t')
-			case 'u':
-				r, err := p.u4()
-				if err != nil {
-					return "", err
-				}
-				if utf16.IsSurrogate(r) {
-					if p.i+6 <= len(p.b) && p.b[p.i] == '\\' && p.b[p.i+1] == 'u' {
-						p.i += 2
-						r2, err := p.u4()
-						if err != nil {
-							return "", err
-						}
-						pair := utf16.DecodeRune(r, r2)
-						if !utf8.ValidRune(pair) || pair == '\uFFFD' && !(r == 0xFFFD) {
-							b.WriteRune(pair)
-							continue
-						}
-						b.WriteRune(pair)
-						continue
+			if p.b[p.i] == 'u' {
+				p.i++
+				for n := 0; n < 4; n++ {
+					if p.i >= len(p.b) || !isHex(p.b[p.i]) {
+						return "", invalid("mcpstrict: bad unicode escape")
 					}
+					p.i++
 				}
-				b.WriteRune(r)
-			default:
-				return "", invalid("mcpstrict: bad escape")
+				continue
 			}
+			p.i++
 			continue
 		}
 		if c < 0x20 {
 			return "", invalid("mcpstrict: raw control in string")
 		}
-		b.WriteByte(c)
 		p.i++
 	}
 	return "", invalid("mcpstrict: unterminated string")
-}
-
-func (p *parser) u4() (rune, error) {
-	if p.i+4 > len(p.b) {
-		return 0, invalid("mcpstrict: short unicode escape")
-	}
-	n, err := strconv.ParseUint(string(p.b[p.i:p.i+4]), 16, 16)
-	if err != nil {
-		return 0, invalid("mcpstrict: bad unicode escape")
-	}
-	p.i += 4
-	return rune(n), nil
 }
 
 func (p *parser) literal(want string) error {
@@ -445,6 +409,10 @@ func (p *parser) eat(c byte) bool {
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func isHex(c byte) bool {
+	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
 
 func join(path, seg string) string {
 	return path + "/" + pointerEscape(seg)
