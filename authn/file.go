@@ -58,9 +58,13 @@ type FileOpts struct {
 	Harden      bool
 }
 
-// ReadFile reads the raw bytes of path using o's resolve and harden rules.
-// Line mode is not applied. The caller zeroes the returned buffer.
-// For CWDThenBaseDir the first candidate that opens is returned.
+// ReadFile reads the raw bytes of the file the loader would pick for path,
+// using o's resolve, line, and harden rules. The returned buffer is the
+// file's raw bytes; the caller zeroes it. Line mode chooses the candidate,
+// not the returned bytes.
+// For CWDThenBaseDir the first candidate that yields a secret is returned.
+// A FirstNonCommentLine file with no usable line is skipped. A WholeFileTrim
+// read that succeeds is used, including when the trimmed bytes are empty.
 // For AsGivenAndBaseDir only the as-given path is returned; Prepare records both.
 func ReadFile(path string, o FileOpts) ([]byte, error) {
 	if err := validateOpts(o); err != nil {
@@ -73,15 +77,28 @@ func ReadFile(path string, o FileOpts) ([]byte, error) {
 	var first error
 	for _, c := range cands {
 		b, err := readOne(c.path, o.Harden)
-		if err == nil {
-			return b, nil
+		if err != nil {
+			zero(b)
+			if first == nil {
+				first = err
+			}
+			if o.Resolve != CWDThenBaseDir {
+				return nil, err
+			}
+			continue
 		}
-		if first == nil {
-			first = err
+		if o.Resolve == CWDThenBaseDir {
+			sec, serr := secretBytes(b, o.Line)
+			zero(sec)
+			if serr != nil {
+				zero(b)
+				if first == nil {
+					first = serr
+				}
+				continue
+			}
 		}
-		if o.Resolve != CWDThenBaseDir {
-			return nil, err
-		}
+		return b, nil
 	}
 	if first == nil {
 		first = os.ErrNotExist

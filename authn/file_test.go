@@ -217,6 +217,61 @@ func TestReaderRefusesSymlinkToFIFO(t *testing.T) {
 	}
 }
 
+func TestReadFileCWDThenBaseDirUsesUsableLine(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	base := filepath.Join(root, "base")
+	if err := os.Mkdir(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tok"), []byte("# only a comment\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseBody := []byte("base-secret\n")
+	if err := os.WriteFile(filepath.Join(base, "tok"), baseBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := FileOpts{Line: FirstNonCommentLine, Resolve: CWDThenBaseDir, BaseDir: base}
+	got, err := ReadFile("tok", o)
+	defer zero(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, baseBody) {
+		t.Fatalf("comment-only cwd pinned %q", got)
+	}
+	m := mustLoad(t, Config{
+		Mode: ModeBearer, Duplicates: RejectDuplicateValue,
+		Source: PerTokenFiles([]FileToken{{ID: "a", Role: "administrator", SecretFile: "tok"}}, o),
+	})
+	if _, err := mustVer(t, m).AuthenticateBearer([]byte("base-secret")); err != nil {
+		t.Fatal(err)
+	}
+
+	cwdBody := []byte("cwd-secret\n")
+	if err := os.WriteFile(filepath.Join(root, "tok"), cwdBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ReadFile("tok", o)
+	defer zero(got)
+	if err != nil || !bytes.Equal(got, cwdBody) {
+		t.Fatalf("cwd got %q err %v", got, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "whole"), []byte(" \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "whole"), []byte("base-whole\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wo := FileOpts{Line: WholeFileTrim, Resolve: CWDThenBaseDir, BaseDir: base}
+	got, err = ReadFile("whole", wo)
+	defer zero(got)
+	if err != nil || !bytes.Equal(got, []byte(" \n")) {
+		t.Fatalf("whole-file trim got %q err %v", got, err)
+	}
+}
+
 func TestUsableLineLenMatchesMaildev(t *testing.T) {
 	dir := t.TempDir()
 	o := passOpts(false)
