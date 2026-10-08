@@ -190,8 +190,11 @@ type RebindObs struct {
 }
 
 // RebindDriver runs one experimental rebind variant against a real listener.
+// FailureText is today's error for a failing variant and empty on success.
+// Syslog's address change (RebindRefuse) is "validation_failed".
 type RebindDriver interface {
 	Variant() RebindVariant
+	FailureText() string
 	Run(ctx context.Context) RebindObs
 }
 

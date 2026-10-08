@@ -71,10 +71,12 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		}},
 		{"ManagementRebindOverAPI", func(t *testing.T) {
 			for _, v := range []RebindVariant{RebindMove, RebindOff, RebindTaken, RebindSame, RebindRefuse, RebindKeep} {
-				ManagementRebindOverAPI(t, newRebind(t, v, false))
+				ManagementRebindOverAPI(t, newRebind(t, v, ""))
 			}
 		}, []func(Testing){
-			func(tb Testing) { ManagementRebindOverAPI(tb, newRebind(nil, RebindMove, true)) },
+			func(tb Testing) { ManagementRebindOverAPI(tb, newRebind(nil, RebindMove, "slow")) },
+			func(tb Testing) { ManagementRebindOverAPI(tb, newRebind(nil, RebindRefuse, "code")) },
+			func(tb Testing) { ManagementRebindOverAPI(tb, newRebind(nil, RebindTaken, "code")) },
 		}},
 		{"CatalogCoversTools", func(t *testing.T) { CatalogCoversTools(t, newCatalog(false)) }, []func(Testing){
 			func(tb Testing) { CatalogCoversTools(tb, newCatalog(true)) },
@@ -978,17 +980,33 @@ func expireAfter(idle, absolute, jump time.Duration) bool {
 type rebindRef struct {
 	t       *testing.T
 	variant RebindVariant
-	bug     bool
+	bug     string
 }
 
-func newRebind(t *testing.T, v RebindVariant, bug bool) *rebindRef {
+func newRebind(t *testing.T, v RebindVariant, bug string) *rebindRef {
 	return &rebindRef{t: t, variant: v, bug: bug}
 }
 func (d *rebindRef) Variant() RebindVariant { return d.variant }
 
+// FailureText is the error the variant must report. Syslog refuses an
+// address change with validation_failed. Taken uses today's listen error.
+func (d *rebindRef) FailureText() string {
+	switch d.variant {
+	case RebindTaken:
+		return "address in use"
+	case RebindRefuse:
+		return "validation_failed"
+	default:
+		return ""
+	}
+}
+
 func (d *rebindRef) Run(context.Context) RebindObs {
-	if d.bug {
+	if d.bug == "slow" {
 		return RebindObs{Elapsed: 2 * time.Second, NewServes: true, OldRefuses: true, RevisionChanged: true}
+	}
+	if d.bug == "code" {
+		return RebindObs{Elapsed: time.Millisecond, Code: "nope", OldStillServes: true}
 	}
 	start := time.Now()
 	switch d.variant {

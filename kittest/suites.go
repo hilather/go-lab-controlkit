@@ -338,29 +338,32 @@ func ManagementRebindOverAPI(t Testing, d RebindDriver) {
 	if obs.Elapsed >= time.Second {
 		t.Fatalf("%s took %s", d.Variant(), obs.Elapsed)
 	}
+	if obs.Code != d.FailureText() {
+		t.Fatalf("%s code %q want %q", d.Variant(), obs.Code, d.FailureText())
+	}
 	switch d.Variant() {
 	case RebindMove:
-		if obs.Code != "" || !obs.NewServes || !obs.OldRefuses || !obs.RevisionChanged {
+		if !obs.NewServes || !obs.OldRefuses || !obs.RevisionChanged {
 			t.Fatalf("move: %+v", obs)
 		}
 	case RebindOff:
-		if obs.Code != "" || !obs.ResponseIntact || !obs.OldRefuses || obs.OldStillServes {
+		if !obs.ResponseIntact || !obs.OldRefuses || obs.OldStillServes {
 			t.Fatalf("off: %+v", obs)
 		}
 	case RebindTaken:
-		if obs.Code == "" || !obs.OldStillServes || obs.RevisionChanged {
+		if !obs.OldStillServes || obs.RevisionChanged {
 			t.Fatalf("taken: %+v", obs)
 		}
 	case RebindSame:
-		if obs.Code != "" || !obs.OldStillServes {
+		if !obs.OldStillServes {
 			t.Fatalf("same: %+v", obs)
 		}
 	case RebindRefuse:
-		if obs.Code == "" || !obs.OldStillServes || obs.RevisionChanged {
+		if !obs.OldStillServes || obs.RevisionChanged {
 			t.Fatalf("refuse: %+v", obs)
 		}
 	case RebindKeep:
-		if obs.Code != "" || !obs.OldStillServes {
+		if !obs.OldStillServes {
 			t.Fatalf("keep: %+v", obs)
 		}
 	default:
