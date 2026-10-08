@@ -26,45 +26,87 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	n := map[string]int{}
+	for _, s := range a {
+		n[s]++
+	}
+	for _, s := range b {
+		n[s]--
+		if n[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// demotionOK reports whether demoted drops at least one startup scope and
+// keeps at least one.
+func demotionOK(startup, demoted []string) bool {
+	dropped, kept := false, false
+	for _, s := range startup {
+		if has(demoted, s) {
+			kept = true
+		} else {
+			dropped = true
+		}
+	}
+	return dropped && kept
+}
+
 // StdioRotation checks a token pin across demotion, rotation, removal,
 // restore, and a rejected reset, then the maildev dev-loopback arm when
-// the driver has one.
+// the driver has one. Scope ids and the unauthenticated wire code come
+// from the driver: tables use ids such as syslog.read, and netconf and
+// syslog report unauthorized.
 func StdioRotation(t Testing, d StdioRotationDriver) {
 	t.Helper()
 	ctx := context.Background()
+	code := d.Code()
+	if code == "" {
+		t.Fatalf("unauthenticated code is empty")
+	}
+	startWant := d.StartupScopes()
+	demWant := d.DemotedScopes()
+	if len(startWant) == 0 || len(demWant) == 0 || !demotionOK(startWant, demWant) {
+		t.Fatalf("scope sets: startup %v demoted %v", startWant, demWant)
+	}
 	start := d.Call(ctx, "mapped")
-	if start.Code != "ok" || !start.HandlerRan || !has(start.Scopes, "admin") {
-		t.Fatalf("startup pin: %+v", start)
+	if start.Code != "ok" || !start.HandlerRan || !sameSet(start.Scopes, startWant) {
+		t.Fatalf("startup pin: %+v want scopes %v", start, startWant)
 	}
 	if err := d.Reset(ctx, "demote"); err != nil {
 		t.Fatalf("demote: %v", err)
 	}
 	dem := d.Call(ctx, "mapped")
-	if dem.Code != "ok" || !dem.HandlerRan || has(dem.Scopes, "admin") || !has(dem.Scopes, "read") {
-		t.Fatalf("demote: %+v", dem)
+	if dem.Code != "ok" || !dem.HandlerRan || !sameSet(dem.Scopes, demWant) {
+		t.Fatalf("demote: %+v want scopes %v", dem, demWant)
 	}
 	if err := d.Reset(ctx, "rotate"); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
-	assertUnauth(t, d, "mapped")
-	assertUnauth(t, d, "unmapped")
+	assertUnauth(t, d, code, "mapped")
+	assertUnauth(t, d, code, "unmapped")
 	if err := d.Reset(ctx, "remove"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	assertUnauth(t, d, "mapped")
-	assertUnauth(t, d, "unmapped")
+	assertUnauth(t, d, code, "mapped")
+	assertUnauth(t, d, code, "unmapped")
 	if err := d.Reset(ctx, "restore"); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	back := d.Call(ctx, "mapped")
-	if back.Code != "ok" || !back.HandlerRan || !has(back.Scopes, "admin") {
-		t.Fatalf("restore: %+v", back)
+	if back.Code != "ok" || !back.HandlerRan || !sameSet(back.Scopes, startWant) {
+		t.Fatalf("restore: %+v want scopes %v", back, startWant)
 	}
 	if err := d.Reset(ctx, "reject"); err == nil {
 		t.Fatalf("rejected reset succeeded")
 	}
 	still := d.Call(ctx, "mapped")
-	if still.Code != "ok" || !still.HandlerRan || !has(still.Scopes, "admin") {
+	if still.Code != "ok" || !still.HandlerRan || !sameSet(still.Scopes, startWant) {
 		t.Fatalf("reject changed the pin: %+v", still)
 	}
 	if res, ok := d.Loopback(ctx, "before"); ok {
@@ -72,17 +114,17 @@ func StdioRotation(t Testing, d StdioRotationDriver) {
 			t.Fatalf("loopback before: %+v", res)
 		}
 		after, ok := d.Loopback(ctx, "after")
-		if !ok || after.Code != "unauthenticated" || after.HandlerRan {
-			t.Fatalf("loopback after: %+v ok %v", after, ok)
+		if !ok || after.Code != code || after.HandlerRan {
+			t.Fatalf("loopback after: %+v ok %v want code %s", after, ok, code)
 		}
 	}
 }
 
-func assertUnauth(t Testing, d StdioRotationDriver, tool string) {
+func assertUnauth(t Testing, d StdioRotationDriver, code, tool string) {
 	t.Helper()
 	got := d.Call(context.Background(), tool)
-	if got.Code != "unauthenticated" || got.HandlerRan {
-		t.Fatalf("%s: %+v", tool, got)
+	if got.Code != code || got.HandlerRan {
+		t.Fatalf("%s: %+v want code %s", tool, got, code)
 	}
 }
 

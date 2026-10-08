@@ -17,11 +17,19 @@ type ToolResult struct {
 }
 
 // StdioRotationDriver is the mcp-stdio pin a StdioRotation run drives.
+// Code is the repo's unauthenticated wire code. ntp, snmp, maildev, and
+// dns use "unauthenticated". netconf and syslog use "unauthorized".
+// StartupScopes is the scope set a mapped call sees before demotion.
+// DemotedScopes is the scope set after the demotion reset. It must drop
+// at least one startup scope and keep at least one.
 // Reset steps are demote, rotate, remove, restore, and reject.
 // reject must fail and leave the pin unchanged.
 // Loopback reports the maildev dev-loopback pin. ok false means this
 // wiring has no such pin and the arm is skipped. step is before or after.
 type StdioRotationDriver interface {
+	Code() string
+	StartupScopes() []string
+	DemotedScopes() []string
 	Call(ctx context.Context, tool string) ToolResult
 	Reset(ctx context.Context, step string) error
 	Loopback(ctx context.Context, step string) (ToolResult, bool)

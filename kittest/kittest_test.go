@@ -34,33 +34,70 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 	cases := []struct {
 		name string
 		ok   func(t *testing.T)
-		bad  func(Testing)
+		bad  []func(Testing)
 	}{
-		{"StdioRotation", func(t *testing.T) { StdioRotation(t, newStdio(t, "")) }, func(tb Testing) { StdioRotation(tb, newStdio(nil, "rotate")) }},
-		{"ResetUnreadableSecret", func(t *testing.T) { ResetUnreadableSecret(t, newResetFail(t, false)) }, func(tb Testing) { ResetUnreadableSecret(tb, newResetFail(nil, true)) }},
-		{"ResetZeroTokens", func(t *testing.T) { ResetZeroTokens(t, newZero(false)) }, func(tb Testing) { ResetZeroTokens(tb, newZero(true)) }},
-		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(false)) }, func(tb Testing) { ApplyNoSecretRead(tb, newApply(true)) }},
-		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(false)) }, func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(true)) }},
-		{"ResetPrepareRace", func(t *testing.T) { ResetPrepareRace(t, newRace(t, false)) }, func(tb Testing) { ResetPrepareRace(tb, newRace(nil, true)) }},
-		{"BootManagementOffNoSecretRead", func(t *testing.T) { BootManagementOffNoSecretRead(t, newBoot(t, false)) }, func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, true)) }},
-		{"StreamRevocation", func(t *testing.T) { StreamRevocation(t, newStream("")) }, func(tb Testing) { StreamRevocation(tb, newStream("delete")) }},
+		{"StdioRotation", func(t *testing.T) { StdioRotation(t, newStdio(t, "")) }, []func(Testing){
+			func(tb Testing) { StdioRotation(tb, newStdio(nil, "rotate")) },
+			func(tb Testing) { StdioRotation(tb, newStdio(nil, "code")) },
+			func(tb Testing) { StdioRotation(tb, newStdio(nil, "loop-code")) },
+			func(tb Testing) { StdioRotation(tb, newStdio(nil, "scopes")) },
+			func(tb Testing) { StdioRotation(tb, newStdio(nil, "no-drop")) },
+		}},
+		{"ResetUnreadableSecret", func(t *testing.T) { ResetUnreadableSecret(t, newResetFail(t, false)) }, []func(Testing){
+			func(tb Testing) { ResetUnreadableSecret(tb, newResetFail(nil, true)) },
+		}},
+		{"ResetZeroTokens", func(t *testing.T) { ResetZeroTokens(t, newZero(false)) }, []func(Testing){
+			func(tb Testing) { ResetZeroTokens(tb, newZero(true)) },
+		}},
+		{"ApplyNoSecretRead", func(t *testing.T) { ApplyNoSecretRead(t, newApply(false)) }, []func(Testing){
+			func(tb Testing) { ApplyNoSecretRead(tb, newApply(true)) },
+		}},
+		{"ResetLoadOnce", func(t *testing.T) { ResetLoadOnce(t, newLoadOnce(false)) }, []func(Testing){
+			func(tb Testing) { ResetLoadOnce(tb, newLoadOnce(true)) },
+		}},
+		{"ResetPrepareRace", func(t *testing.T) { ResetPrepareRace(t, newRace(t, false)) }, []func(Testing){
+			func(tb Testing) { ResetPrepareRace(tb, newRace(nil, true)) },
+		}},
+		{"BootManagementOffNoSecretRead", func(t *testing.T) { BootManagementOffNoSecretRead(t, newBoot(t, false)) }, []func(Testing){
+			func(tb Testing) { BootManagementOffNoSecretRead(tb, newBoot(nil, true)) },
+		}},
+		{"StreamRevocation", func(t *testing.T) { StreamRevocation(t, newStream("")) }, []func(Testing){
+			func(tb Testing) { StreamRevocation(tb, newStream("delete")) },
+		}},
 		{"ManagementRebindOverAPI", func(t *testing.T) {
 			for _, v := range []RebindVariant{RebindMove, RebindOff, RebindTaken, RebindSame, RebindRefuse, RebindKeep} {
 				ManagementRebindOverAPI(t, newRebind(t, v, false))
 			}
-		}, func(tb Testing) { ManagementRebindOverAPI(tb, newRebind(nil, RebindMove, true)) }},
-		{"CatalogCoversTools", func(t *testing.T) { CatalogCoversTools(t, newCatalog(false)) }, func(tb Testing) { CatalogCoversTools(tb, newCatalog(true)) }},
-		{"IdentityChangeClearsSessions", func(t *testing.T) { IdentityChangeClearsSessions(t, newIdentity(false)) }, func(tb Testing) { IdentityChangeClearsSessions(tb, newIdentity(true)) }},
-		{"DeniedAudited", func(t *testing.T) { DeniedAudited(t, newDenied(false)) }, func(tb Testing) { DeniedAudited(tb, newDenied(true)) }},
-		{"DeniedGuardFlood", func(t *testing.T) { DeniedGuardFlood(t, newFlood(false)) }, func(tb Testing) { DeniedGuardFlood(tb, newFlood(true)) }},
-		{"MCPStrictInput", func(t *testing.T) { MCPStrictInput(t, newStrict(false)) }, func(tb Testing) { MCPStrictInput(tb, newStrict(true)) }},
+		}, []func(Testing){
+			func(tb Testing) { ManagementRebindOverAPI(tb, newRebind(nil, RebindMove, true)) },
+		}},
+		{"CatalogCoversTools", func(t *testing.T) { CatalogCoversTools(t, newCatalog(false)) }, []func(Testing){
+			func(tb Testing) { CatalogCoversTools(tb, newCatalog(true)) },
+		}},
+		{"IdentityChangeClearsSessions", func(t *testing.T) { IdentityChangeClearsSessions(t, newIdentity(false)) }, []func(Testing){
+			func(tb Testing) { IdentityChangeClearsSessions(tb, newIdentity(true)) },
+		}},
+		{"DeniedAudited", func(t *testing.T) { DeniedAudited(t, newDenied(false)) }, []func(Testing){
+			func(tb Testing) { DeniedAudited(tb, newDenied(true)) },
+		}},
+		{"DeniedGuardFlood", func(t *testing.T) { DeniedGuardFlood(t, newFlood(false)) }, []func(Testing){
+			func(tb Testing) { DeniedGuardFlood(tb, newFlood(true)) },
+		}},
+		{"MCPStrictInput", func(t *testing.T) { MCPStrictInput(t, newStrict(false)) }, []func(Testing){
+			func(tb Testing) { MCPStrictInput(tb, newStrict(true)) },
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.ok(t)
-			fake := runFake(tc.bad)
-			if !fake.failed {
-				t.Fatalf("seeded bug did not fail the suite: %v", fake.msgs)
+			if len(tc.bad) == 0 {
+				t.Fatal("no seeded bug")
+			}
+			for i, bad := range tc.bad {
+				fake := runFake(bad)
+				if !fake.failed {
+					t.Fatalf("seeded bug %d did not fail the suite: %v", i, fake.msgs)
+				}
 			}
 		})
 	}
@@ -111,10 +148,14 @@ func roleTable() scope.Table {
 }
 
 func matRole(secret, role string) *authn.Material {
+	return matRoleIn(secret, role, roleTable())
+}
+
+func matRoleIn(secret, role string, roles scope.Table) *authn.Material {
 	m, err := authn.Load(authn.Config{
 		Mode:       authn.ModeBearer,
 		Duplicates: authn.RejectDuplicateValue,
-		Roles:      roleTable(),
+		Roles:      roles,
 		Source: authn.Memory([]authn.RawToken{{
 			ID: "ada", Role: role, Secret: authn.NewSecret([]byte(secret)),
 		}}),
@@ -123,6 +164,24 @@ func matRole(secret, role string) *authn.Material {
 		panic(err)
 	}
 	return m
+}
+
+// stdioAdminScopes and stdioOperatorScopes are syslog's ids. The reference
+// must not use the labels "admin" and "read"; those are not a real table.
+func stdioAdminScopes() []string {
+	return []string{"syslog.read", "syslog.write", "syslog.admin", "syslog.audit.read"}
+}
+
+func stdioOperatorScopes() []string {
+	return []string{"syslog.read"}
+}
+
+func stdioRoles() scope.Table {
+	return scope.Table{Roles: map[string][]string{
+		"administrator": stdioAdminScopes(),
+		"operator":      stdioOperatorScopes(),
+		"viewer":        {"syslog.audit.read"},
+	}}
 }
 
 func matMode(mode authn.Mode, secret, role string, accept func(*authn.Material) error) *authn.Material {
@@ -179,13 +238,16 @@ type stdioRef struct {
 }
 
 func newStdio(t *testing.T, bug string) *stdioRef {
-	v := mustVer(matRole(secretA, "administrator"))
+	roles := stdioRoles()
+	v := mustVer(matRoleIn(secretA, "administrator", roles))
 	pin, err := authn.NewStdioPin(v, authn.NewSecret([]byte(secretA)))
 	if err != nil {
 		panic(err)
 	}
 	lv := mustVer(matMode(authn.ModeDevLoopbackUnauth, "", "", nil))
-	lp, err := authn.NewDevLoopbackStdio(lv, scope.Principal{ID: "loop", Class: "loopback", Role: "administrator"})
+	lp, err := authn.NewDevLoopbackStdio(lv, scope.Principal{
+		ID: "loop", Class: "loopback", Role: "administrator", Scopes: stdioAdminScopes(),
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -193,13 +255,31 @@ func newStdio(t *testing.T, bug string) *stdioRef {
 	return &stdioRef{v: v, pin: pin, loopV: lv, loop: lp, bug: bug}
 }
 
+// Code is syslog's wire code. A suite that hardcodes "unauthenticated" fails.
+func (d *stdioRef) Code() string { return "unauthorized" }
+
+func (d *stdioRef) StartupScopes() []string { return stdioAdminScopes() }
+
+func (d *stdioRef) DemotedScopes() []string {
+	if d.bug == "no-drop" {
+		return stdioAdminScopes()
+	}
+	return stdioOperatorScopes()
+}
+
 func (d *stdioRef) Call(_ context.Context, tool string) ToolResult {
 	if d.bug == "rotate" && d.step == "rotate" {
-		return ToolResult{Code: "ok", HandlerRan: true, Scopes: []string{"admin", "read"}}
+		return ToolResult{Code: "ok", HandlerRan: true, Scopes: stdioAdminScopes()}
+	}
+	if d.bug == "code" && (d.step == "rotate" || d.step == "remove") {
+		return ToolResult{Code: "unauthenticated"}
+	}
+	if d.bug == "scopes" && d.step == "demote" {
+		return ToolResult{Code: "ok", HandlerRan: true, Scopes: stdioAdminScopes()}
 	}
 	p, err := d.pin.Resolve()
 	if err != nil {
-		return ToolResult{Code: "unauthenticated"}
+		return ToolResult{Code: d.Code()}
 	}
 	if tool == "unmapped" {
 		return ToolResult{Code: "ok", HandlerRan: true, Scopes: append([]string(nil), p.Scopes...)}
@@ -209,15 +289,16 @@ func (d *stdioRef) Call(_ context.Context, tool string) ToolResult {
 
 func (d *stdioRef) Reset(_ context.Context, step string) error {
 	d.step = step
+	roles := stdioRoles()
 	switch step {
 	case "demote":
-		d.v.Swap(matRole(secretA, "operator"))
+		d.v.Swap(matRoleIn(secretA, "operator", roles))
 	case "rotate":
-		d.v.Swap(matRole(secretB, "administrator"))
+		d.v.Swap(matRoleIn(secretB, "administrator", roles))
 	case "remove":
-		d.v.Swap(matRole(secretC, "administrator"))
+		d.v.Swap(matRoleIn(secretC, "administrator", roles))
 	case "restore":
-		d.v.Swap(matRole(secretA, "administrator"))
+		d.v.Swap(matRoleIn(secretA, "administrator", roles))
 	case "reject":
 		return errors.New("unreadable")
 	default:
@@ -228,12 +309,17 @@ func (d *stdioRef) Reset(_ context.Context, step string) error {
 
 func (d *stdioRef) Loopback(_ context.Context, step string) (ToolResult, bool) {
 	if step == "after" {
-		d.loopV.Swap(matRole(secretA, "administrator"))
+		d.loopV.Swap(matRoleIn(secretA, "administrator", stdioRoles()))
 	}
-	if _, err := d.loop.Resolve(); err != nil {
-		return ToolResult{Code: "unauthenticated"}, true
+	p, err := d.loop.Resolve()
+	if err != nil {
+		code := d.Code()
+		if d.bug == "loop-code" || d.bug == "code" {
+			code = "unauthenticated"
+		}
+		return ToolResult{Code: code}, true
 	}
-	return ToolResult{Code: "ok", HandlerRan: true, Scopes: []string{"admin"}}, true
+	return ToolResult{Code: "ok", HandlerRan: true, Scopes: append([]string(nil), p.Scopes...)}, true
 }
 
 type resetFailRef struct {
