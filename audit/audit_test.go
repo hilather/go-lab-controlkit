@@ -238,11 +238,11 @@ func TestFanoutBestEffort(t *testing.T) {
 	f, err := NewFanout(r, func(e row) row {
 		e.Name = "redacted"
 		return e
-	}, func(row) error { return nil })
+	}, func(context.Context, row) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored := f.Record(row{Name: "secret", Result: "ok"})
+	stored := f.Record(context.Background(), row{Name: "secret", Result: "ok"})
 	if stored.Name != "redacted" {
 		t.Fatal(stored.Name)
 	}
@@ -256,17 +256,41 @@ func TestDeliveryFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := NewFanout[row](r, nil, func(row) error { return errors.New("down") })
+	f, err := NewFanout[row](r, nil, func(context.Context, row) error { return errors.New("down") })
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Record(row{Name: "a", Result: "ok"})
-	f.Record(row{Name: "b", Result: "ok"})
+	f.Record(context.Background(), row{Name: "a", Result: "ok"})
+	f.Record(context.Background(), row{Name: "b", Result: "ok"})
 	if f.DeliveryFailures() != 2 {
 		t.Fatal(f.DeliveryFailures())
 	}
 	if r.Len() != 2 {
 		t.Fatal("sink failure dropped the row")
+	}
+}
+
+func TestFanoutPassesContext(t *testing.T) {
+	r, err := NewRing[row](RingOptions[row]{Max: 2, SetID: setID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var got context.Context
+	f, err := NewFanout(r, nil, func(c context.Context, e row) error {
+		got = c
+		return c.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := f.Record(ctx, row{Name: "a", Result: "ok"})
+	if got != ctx {
+		t.Fatal("sink did not receive the record context")
+	}
+	if stored.Name != "a" || f.DeliveryFailures() != 1 || r.Len() != 1 {
+		t.Fatalf("stored %+v fails %d len %d", stored, f.DeliveryFailures(), r.Len())
 	}
 }
 

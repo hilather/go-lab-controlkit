@@ -332,23 +332,26 @@ func fallbackID() string {
 // Fanout redacts, appends to a ring, and delivers to a best-effort sink.
 // A sink error increments DeliveryFailures and does not fail Record.
 // redact, when nil, leaves the event unchanged. sink, when nil, is skipped.
+// The sink receives the context passed to Record, including a nil context.
+// maildev's Hook.Emit uses that context.
 type Fanout[E any] struct {
 	ring   *Ring[E]
 	redact func(E) E
-	sink   func(E) error
+	sink   func(context.Context, E) error
 	fails  atomic.Uint64
 }
 
 // NewFanout builds a fanout. ring is required.
-func NewFanout[E any](ring *Ring[E], redact func(E) E, sink func(E) error) (*Fanout[E], error) {
+func NewFanout[E any](ring *Ring[E], redact func(E) E, sink func(context.Context, E) error) (*Fanout[E], error) {
 	if ring == nil {
 		return nil, errors.New("audit: fanout ring is required")
 	}
 	return &Fanout[E]{ring: ring, redact: redact, sink: sink}, nil
 }
 
-// Record redacts e, appends it, and calls the sink. The stored event is returned.
-func (f *Fanout[E]) Record(e E) E {
+// Record redacts e, appends it, and calls the sink with ctx.
+// The stored event is returned. A nil ctx is passed through.
+func (f *Fanout[E]) Record(ctx context.Context, e E) E {
 	if f == nil {
 		return e
 	}
@@ -357,7 +360,7 @@ func (f *Fanout[E]) Record(e E) E {
 	}
 	e = f.ring.Append(e)
 	if f.sink != nil {
-		if err := f.sink(e); err != nil {
+		if err := f.sink(ctx, e); err != nil {
 			f.fails.Add(1)
 		}
 	}
