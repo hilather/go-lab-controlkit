@@ -1,0 +1,3 @@
+# Review auto-requests only. Branch protection on main requires no approving
+# review; see README.md "Contributing".
+* @hilather
