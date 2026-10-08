@@ -1,6 +1,8 @@
 package idem
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/hilather/go-lab-controlkit/kerr"
@@ -121,6 +123,59 @@ func TestFingerprintCanonical(t *testing.T) {
 	if err != nil || empty == "" {
 		t.Fatal(err)
 	}
+}
+
+func TestCacheDocCallerLocks(t *testing.T) {
+	doc := strings.Join(strings.Fields(exportedTypeDoc(t, "idem.go", "Cache")), " ")
+	for _, phrase := range []string{
+		"not safe for concurrent use",
+		"Callers hold their own lock",
+		"own mutex",
+		"syslog holds the service mutex",
+	} {
+		if !strings.Contains(doc, phrase) {
+			t.Fatalf("Cache doc missing %q:\n%s", phrase, doc)
+		}
+	}
+}
+
+func exportedTypeDoc(t *testing.T, filename, typeName string) string {
+	t.Helper()
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	i := strings.Index(text, "type "+typeName+" ")
+	if i < 0 {
+		i = strings.Index(text, "type "+typeName+"[")
+	}
+	if i < 0 {
+		t.Fatalf("type %s not found", typeName)
+	}
+	lines := strings.Split(text[:i], "\n")
+	var rev []string
+	for n := len(lines) - 1; n >= 0; n-- {
+		line := strings.TrimSpace(lines[n])
+		if line == "" {
+			if len(rev) > 0 {
+				break
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		rev = append(rev, line)
+	}
+	if len(rev) == 0 {
+		t.Fatalf("type %s has no doc comment", typeName)
+	}
+	parts := make([]string, len(rev))
+	for n := range rev {
+		parts[n] = rev[len(rev)-1-n]
+	}
+	return strings.Join(parts, "\n")
 }
 
 func mustCache[V any](t *testing.T, max int, ev Eviction) *Cache[V] {

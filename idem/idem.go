@@ -37,6 +37,10 @@ type entry[V any] struct {
 }
 
 // Cache stores completed idempotent results.
+//
+// Cache is not safe for concurrent use. Callers hold their own lock
+// around every method. ntp, snmp, netconf, maildev, and dns wrap the
+// cache in its own mutex. syslog holds the service mutex around the map.
 type Cache[V any] struct {
 	max int
 	ev  Eviction
