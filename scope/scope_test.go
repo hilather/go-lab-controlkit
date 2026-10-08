@@ -135,11 +135,60 @@ func TestUnmappedAllowAndForbid(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs := rec.Events()
-	if len(evs) != 1 || evs[0].ActorID != "v" || evs[0].Transport != "mcp" || evs[0].ErrorCode != "forbidden" {
+	if len(evs) != 1 || evs[0].ActorID != "v" || evs[0].Transport != "mcp" || evs[0].ErrorCode != "forbidden" || evs[0].Capability != "" {
 		t.Fatalf("%+v", evs)
 	}
 	if _, err := NewGate(Gate{}); err == nil {
 		t.Fatal("zero gate")
+	}
+}
+
+func TestUnknownResource(t *testing.T) {
+	viewer := Principal{ID: "v", Class: "token", Role: "viewer", Scopes: []string{"read"}, Transport: "mcp"}
+	allow, rec := gate(t, Allow, false, nil)
+	if err := allow.Resource(context.Background(), viewer, "lab://missing"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Events()) != 0 {
+		t.Fatalf("allow recorded %+v", rec.Events())
+	}
+
+	rec = &audit.CountRecorder{}
+	g, err := NewGate(Gate{
+		Eval:            templateTable(true),
+		Catalog:         cat{},
+		Unmapped:        Allow,
+		UnknownResource: ResourceMissNotFound,
+		Denied:          rec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Tool(context.Background(), viewer, "missing-tool"); err != nil {
+		t.Fatal(err)
+	}
+	err = g.Resource(context.Background(), viewer, "lab://missing")
+	if !kindIs(err, kerr.NotFound) || err.Error() != "not found" {
+		t.Fatalf("not found: %v", err)
+	}
+	if len(rec.Events()) != 0 {
+		t.Fatalf("not found recorded %+v", rec.Events())
+	}
+
+	forbid, _ := gate(t, Forbid, false, nil)
+	forbid.UnknownResource = ResourceMissNotFound
+	err = forbid.Resource(context.Background(), viewer, "lab://missing")
+	if !kindIs(err, kerr.NotFound) {
+		t.Fatalf("forbid policy changed not-found: %v", err)
+	}
+
+	if _, err := NewGate(Gate{
+		Eval:            templateTable(true),
+		Catalog:         cat{},
+		Unmapped:        Allow,
+		UnknownResource: ResourceMiss(9),
+	}); !kindIs(err, kerr.Invalid) {
+		t.Fatalf("bad policy: %v", err)
 	}
 }
 

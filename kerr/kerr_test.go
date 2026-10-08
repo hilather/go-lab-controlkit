@@ -25,7 +25,7 @@ func TestKindOf(t *testing.T) {
 	if e.Error() != "nope" || e.Violations[0].Path != "spec.auth.mode" {
 		t.Fatalf("error text or violation: %+v", e)
 	}
-	if Unauthenticated.String() != "unauthenticated" || Kind(99).String() != "unset" {
-		t.Fatal(Unauthenticated.String())
+	if Unauthenticated.String() != "unauthenticated" || NotFound.String() != "not_found" || Kind(99).String() != "unset" {
+		t.Fatal(Unauthenticated.String(), NotFound.String())
 	}
 }

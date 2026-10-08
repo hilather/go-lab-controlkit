@@ -25,6 +25,9 @@ const (
 	Unavailable
 	// Internal means the kit hit a bug or an impossible state.
 	Internal
+	// NotFound means the named resource is not in the catalog.
+	// Facades map it to their not_found wire code.
+	NotFound
 )
 
 // String returns the stable lower-case name of the kind.
@@ -46,6 +49,8 @@ func (k Kind) String() string {
 		return "unavailable"
 	case Internal:
 		return "internal"
+	case NotFound:
+		return "not_found"
 	default:
 		return "unset"
 	}

@@ -139,19 +139,37 @@ const (
 	Forbid
 )
 
+// ResourceMiss is what Resource does when ResourceCaps returns no capability.
+// The zero value follows Unmapped.
+type ResourceMiss int
+
+const (
+	// ResourceMissUnmapped follows Unmapped. It is the zero value.
+	// dns uses it with Unmapped Allow, so an unknown resource is allowed.
+	ResourceMissUnmapped ResourceMiss = iota
+	// ResourceMissNotFound returns kerr.NotFound ("not found") and does not
+	// record a denial. ntp, snmp, netconf, maildev, and syslog use this.
+	ResourceMissNotFound
+)
+
 // Gate authorizes capabilities, tools, and resources.
 // Authorize, when nil, means Authorize through Eval.
 // ToolExtra, when nil, means no extra per-tool check.
 // FirstCapOnly false checks every mapped capability. True checks only the first.
+// UnknownResource zero follows Unmapped. ResourceMissNotFound returns
+// kerr.NotFound for a resource the catalog does not map and records nothing.
+// Any other value is a constructor error. ntp, snmp, netconf, maildev, and
+// syslog set ResourceMissNotFound. dns leaves the zero with Unmapped Allow.
 // Denied, when nil, means denials are not recorded.
 type Gate struct {
-	Eval         Evaluator
-	Catalog      Catalog
-	Authorize    CapAuthorizer
-	ToolExtra    func(p Principal, tool, capID string) error
-	Unmapped     UnmappedPolicy
-	FirstCapOnly bool
-	Denied       audit.DeniedRecorder
+	Eval            Evaluator
+	Catalog         Catalog
+	Authorize       CapAuthorizer
+	ToolExtra       func(p Principal, tool, capID string) error
+	Unmapped        UnmappedPolicy
+	UnknownResource ResourceMiss
+	FirstCapOnly    bool
+	Denied          audit.DeniedRecorder
 }
 
 // NewGate validates g and fills a nil Authorize.
@@ -164,6 +182,9 @@ func NewGate(g Gate) (*Gate, error) {
 	}
 	if g.Unmapped != Allow && g.Unmapped != Forbid {
 		return nil, kerr.New(kerr.Invalid, "gate unmapped policy is required")
+	}
+	if g.UnknownResource != ResourceMissUnmapped && g.UnknownResource != ResourceMissNotFound {
+		return nil, kerr.New(kerr.Invalid, "gate unknown-resource policy is invalid")
 	}
 	if g.Authorize == nil {
 		eval := g.Eval
@@ -197,7 +218,9 @@ func (g *Gate) Tool(ctx context.Context, p Principal, tool string) error {
 	}
 	caps := g.Catalog.ToolCaps(tool)
 	if len(caps) == 0 {
-		return g.unmapped(ctx, p, transportOf(p), tool)
+		// The catalog named no capability. snmp's unknown-tool denial records
+		// no capability id, so the event's Capability stays empty.
+		return g.unmapped(ctx, p, transportOf(p), "")
 	}
 	if g.FirstCapOnly {
 		caps = caps[:1]
@@ -217,13 +240,18 @@ func (g *Gate) Tool(ctx context.Context, p Principal, tool string) error {
 }
 
 // Resource authorizes the capabilities mapped to uri.
+// An empty catalog result follows UnknownResource: the zero value uses
+// Unmapped, and ResourceMissNotFound returns kerr.NotFound without a denial.
 func (g *Gate) Resource(ctx context.Context, p Principal, uri string) error {
 	if g == nil {
 		return kerr.New(kerr.Internal, "nil gate")
 	}
 	caps := g.Catalog.ResourceCaps(uri)
 	if len(caps) == 0 {
-		return g.unmapped(ctx, p, transportOf(p), uri)
+		if g.UnknownResource == ResourceMissNotFound {
+			return kerr.New(kerr.NotFound, "not found")
+		}
+		return g.unmapped(ctx, p, transportOf(p), "")
 	}
 	if g.FirstCapOnly {
 		caps = caps[:1]
