@@ -82,8 +82,13 @@ func (t Table) Effective(p Principal) []string {
 	return nil
 }
 
-// HasScope reports whether p holds want. WildcardScope satisfies every want.
+// HasScope reports whether p holds want. An empty want is held, including
+// when p has no scopes. The five template repos and dns do this.
+// WildcardScope, when non-empty, satisfies every other want.
 func (t Table) HasScope(p Principal, want string) bool {
+	if want == "" {
+		return true
+	}
 	for _, s := range t.Effective(p) {
 		if s == want || (t.WildcardScope != "" && s == t.WildcardScope) {
 			return true

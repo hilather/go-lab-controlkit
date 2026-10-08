@@ -71,6 +71,12 @@ func TestTableMatrices(t *testing.T) {
 	if !explicit.HasScope(admin, "anything") {
 		t.Fatal("wildcard")
 	}
+	if !explicit.HasScope(Principal{}, "") || !explicit.HasScope(admin, "") {
+		t.Fatal("empty want was not held")
+	}
+	if explicit.HasScope(Principal{}, "read") {
+		t.Fatal("empty principal held read")
+	}
 	if err := Authorize(nil, p, []string{"write"}); err == nil {
 		t.Fatal("nil evaluator")
 	}
