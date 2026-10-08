@@ -40,7 +40,7 @@ func Check(raw json.RawMessage, spec Spec) error {
 	}
 	p := parser{b: raw}
 	raws := make(map[string]json.RawMessage)
-	if err := p.parseValue("", raws, 1); err != nil {
+	if err := p.parseValue("", raws, 0); err != nil {
 		return err
 	}
 	p.skipWS()
@@ -245,8 +245,10 @@ func invalid(msg string) error {
 	return kerr.New(kerr.Invalid, msg)
 }
 
-// maxNestingDepth matches encoding/json. Deeper input is rejected before
-// the parser recurses, so it returns an error instead of overflowing the stack.
+// maxNestingDepth is the longest stack of open '{' and '[' containers
+// encoding/json accepts. scanner.pushParseState pushes only those two
+// bytes and then allows a stack length of 10000, so a leaf inside the
+// 10000th container is valid and the 10001st container is not.
 const maxNestingDepth = 10000
 
 type parser struct {
@@ -255,9 +257,6 @@ type parser struct {
 }
 
 func (p *parser) parseValue(path string, raws map[string]json.RawMessage, depth int) error {
-	if depth > maxNestingDepth {
-		return invalid("mcpstrict: invalid json")
-	}
 	p.skipWS()
 	if p.i >= len(p.b) {
 		return invalid("mcpstrict: unexpected end")
@@ -265,10 +264,17 @@ func (p *parser) parseValue(path string, raws map[string]json.RawMessage, depth 
 	start := p.i
 	var err error
 	switch p.b[p.i] {
-	case '{':
-		err = p.parseObject(path, raws, depth)
-	case '[':
-		err = p.parseArray(path, raws, depth)
+	case '{', '[':
+		// depth is the number of containers already open. Reject before
+		// entering another '{' or '[' once that count is 10000.
+		if depth >= maxNestingDepth {
+			return invalid("mcpstrict: invalid json")
+		}
+		if p.b[p.i] == '{' {
+			err = p.parseObject(path, raws, depth)
+		} else {
+			err = p.parseArray(path, raws, depth)
+		}
 	case '"':
 		_, err = p.parseString()
 	case 't':

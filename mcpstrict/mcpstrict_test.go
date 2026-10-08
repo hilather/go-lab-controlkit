@@ -272,6 +272,64 @@ func TestCheckNestingDepth(t *testing.T) {
 			t.Fatalf("depth %d: %v", n, err)
 		}
 	}
+	// A leaf inside the 10000th container is valid JSON. One more container is not.
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		ok   bool
+	}{
+		{name: "arrays-10000", raw: nestedWithLeaf('[', ']', 10000, "0"), ok: true},
+		{name: "arrays-10001", raw: nestedWithLeaf('[', ']', 10001, "0"), ok: false},
+		{name: "objects-10000", raw: nestedObjects(10000, "1"), ok: true},
+		{name: "objects-10001", raw: nestedObjects(10001, "1"), ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var v any
+			uerr := json.Unmarshal(tc.raw, &v)
+			err := Check(tc.raw, Spec{})
+			if tc.ok {
+				if uerr != nil {
+					t.Fatalf("unmarshal: %v", uerr)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if uerr == nil {
+				t.Fatal("unmarshal accepted a container past the encoding/json limit")
+			}
+			if err == nil || !kindIs(err, kerr.Invalid) || !strings.Contains(err.Error(), "mcpstrict: invalid json") {
+				t.Fatalf("check: %v", err)
+			}
+		})
+	}
+}
+
+func nestedWithLeaf(open, close byte, n int, leaf string) json.RawMessage {
+	b := make([]byte, 0, n*2+len(leaf))
+	for i := 0; i < n; i++ {
+		b = append(b, open)
+	}
+	b = append(b, leaf...)
+	for i := 0; i < n; i++ {
+		b = append(b, close)
+	}
+	return b
+}
+
+func nestedObjects(n int, leaf string) json.RawMessage {
+	const open = `{"a":`
+	b := make([]byte, 0, n*len(open)+len(leaf)+n)
+	for i := 0; i < n; i++ {
+		b = append(b, open...)
+	}
+	b = append(b, leaf...)
+	for i := 0; i < n; i++ {
+		b = append(b, '}')
+	}
+	return b
 }
 
 func nestedArrays(n int) json.RawMessage {
