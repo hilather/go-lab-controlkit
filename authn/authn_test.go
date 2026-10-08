@@ -369,6 +369,61 @@ func renderSyslog(e *LoadError, min int) string {
 	}
 }
 
+func TestWholeFileTrimEmptyIsShort(t *testing.T) {
+	dir := t.TempDir()
+	opts := FileOpts{Line: WholeFileTrim, Resolve: AsGiven}
+	bodies := []struct {
+		name string
+		body []byte
+	}{
+		{name: "empty", body: []byte{}},
+		{name: "whitespace", body: []byte(" \n\t\n")},
+	}
+	for _, tc := range bodies {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if err := os.WriteFile(path, tc.body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(Config{
+				Mode: ModeBearer, Duplicates: RejectDuplicateValue, MinSecretBytes: 32,
+				Source: PerTokenFiles([]FileToken{{ID: "a", Role: "administrator", SecretFile: path}}, opts),
+			})
+			le := mustAs(t, err)
+			want := fmt.Sprintf("secretFile %q trimmed contents are shorter than %d bytes", path, 32)
+			if le.Error() != want || le.Code != "invalid_value" || errors.Is(le.Err, os.ErrInvalid) {
+				t.Fatalf("got %+v", le)
+			}
+		})
+	}
+
+	path := filepath.Join(dir, "nofloor")
+	if err := os.WriteFile(path, []byte(" \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(Config{
+		Mode: ModeBearer, Duplicates: RejectDuplicateValue,
+		Source: PerTokenFiles([]FileToken{{ID: "a", Role: "administrator", SecretFile: path}}, opts),
+	})
+	le := mustAs(t, err)
+	if le.Error() != "token value is required" || le.Code != "required" {
+		t.Fatalf("no floor: %+v", le)
+	}
+
+	blank := filepath.Join(dir, "blank-line")
+	if err := os.WriteFile(blank, []byte("\n# comment\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Load(Config{
+		Mode: ModeBearer, Duplicates: RejectDuplicateValue, MinSecretBytes: 32,
+		Source: PerTokenFiles([]FileToken{{ID: "a", Role: "administrator", SecretFile: blank}}, FileOpts{Line: FirstNonCommentLine, Resolve: AsGiven}),
+	})
+	le = mustAs(t, err)
+	if le.Code != "unresolved_reference" || !errors.Is(le.Err, os.ErrInvalid) {
+		t.Fatalf("first line: %+v", le)
+	}
+}
+
 func TestTemplateViolationPaths(t *testing.T) {
 	_, err := Load(Config{
 		Mode: ModeBearer, Duplicates: RejectDuplicateValue, PathPrefix: "spec.auth", RejectEmptyRole: true,
@@ -424,7 +479,9 @@ func TestWarnBelowBytes(t *testing.T) {
 func TestWholeFileTrimVsFirstNonCommentLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tok")
-	body := []byte("# comment\n  secret-value\n")
+	// No space or tab: RejectDuplicateValue lookup rejects those, so a
+	// whole-file secret that contains one can never be presented.
+	body := []byte("\n#comment\nsecret-value\n")
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}

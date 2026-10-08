@@ -20,6 +20,9 @@ const (
 	// snmp rule.
 	FirstNonCommentLine LineMode = iota + 1
 	// WholeFileTrim uses bytes.TrimSpace of the whole file. This is the syslog rule.
+	// A successful read of an empty or whitespace-only file returns a zero-length
+	// slice and no error. MinSecretBytes then reports the short-file sentence.
+	// FirstNonCommentLine with no usable line stays os.ErrInvalid.
 	WholeFileTrim
 )
 
@@ -238,9 +241,6 @@ func secretBytes(b []byte, line LineMode) ([]byte, error) {
 	switch line {
 	case WholeFileTrim:
 		s := bytes.TrimSpace(b)
-		if len(s) == 0 {
-			return nil, os.ErrInvalid
-		}
 		return append([]byte(nil), s...), nil
 	case FirstNonCommentLine:
 		return firstUsableLine(b)

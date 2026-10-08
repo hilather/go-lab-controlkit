@@ -258,13 +258,8 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 			}
 		}
 		raw := tok.Secret.bytes()
-		if len(raw) == 0 {
-			return nil, &LoadError{
-				Kind: kerr.Invalid, Code: "required", TokenIndex: i, TokenID: id, File: tok.Ref,
-				Field: tokenField(cfg.PathPrefix, i, "secretFile"),
-				Msg:   "token value is required",
-			}
-		}
+		// The floor runs before the empty check so a 0-byte whole-file token
+		// with a floor uses syslog's short-file sentence, not "required".
 		if cfg.MinSecretBytes > 0 && len(raw) < cfg.MinSecretBytes {
 			tok.Secret.Zero()
 			ref := tok.Ref
@@ -275,6 +270,13 @@ func compile(cfg Config, tokens []RawToken) (*Material, error) {
 				Kind: kerr.Invalid, Code: "invalid_value", TokenIndex: i, TokenID: id, File: ref,
 				Field: tokenField(cfg.PathPrefix, i, "secretFile"),
 				Msg:   fmt.Sprintf("secretFile %q trimmed contents are shorter than %d bytes", ref, cfg.MinSecretBytes),
+			}
+		}
+		if len(raw) == 0 {
+			return nil, &LoadError{
+				Kind: kerr.Invalid, Code: "required", TokenIndex: i, TokenID: id, File: tok.Ref,
+				Field: tokenField(cfg.PathPrefix, i, "secretFile"),
+				Msg:   "token value is required",
 			}
 		}
 		if cfg.WarnBelowBytes > 0 && len(raw) < cfg.WarnBelowBytes {

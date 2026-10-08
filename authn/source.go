@@ -127,7 +127,10 @@ func readEntry(ent FileToken, o FileOpts, index int) (RawToken, []FileResult, er
 		}
 		zero(raw)
 		loaderCandidate := o.Resolve != AsGivenAndBaseDir || c.resolver == "as-given"
-		if !pickedOK && loaderCandidate && serr == nil && len(sec) > 0 {
+		// A successful WholeFileTrim read is picked even when the trimmed
+		// secret is empty, so compile can apply MinSecretBytes. A read error
+		// or a FirstNonCommentLine with no usable line is not a secret.
+		if !pickedOK && loaderCandidate && fr.ReadErr == nil && serr == nil {
 			fr.Picked = true
 			pickedOK = true
 			picked = RawToken{
