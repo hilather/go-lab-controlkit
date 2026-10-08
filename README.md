@@ -74,7 +74,7 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 | `authn.FileOpts.Harden` = false `*` | all six, in PR-1 | transitional: keeps PR-1 zero-change (3.2) | Resolved: each consumer's C3a commit sets true, and the option is removed before v1.0.0 (M7). |
 | `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Owned by dns before v1.0.0: the P8 warning plus a kittest pin. Token floor enforcement: deferred, warn-only in B (Q8). |
 | `authn.Duplicates` = FirstMatchWins `*` | dns | accidental | Owned by dns before v1.0.0: a kittest pin and a ledger entry. Converging would reject dns configs that boot today, which needs its own decision. |
-| `authn.Accept` (zero-token predicate) | ntp, netconf: refuse; snmp, maildev, syslog: none | product today | Kept in B. P9 (Q11, needs Matt) is the post-migration convergence. |
+| `authn.Accept` (zero-token predicate) | ntp, netconf: refuse; snmp, maildev, syslog: none | product today | Kept in B. P9 (Q11, an open decision) is the post-migration convergence. |
 | `FileOpts.Line`, `Resolve`, `SkipMissing`; `DNSBundle`; dns identity defaults | per repo | product (documented file formats and path rules) | Kept. |
 | `authn.LocalhostIsLoopback` | ntp, maildev: true; dns: false | accidental | Owned per repo. It only matters in dev-loopback mode. Revisit after M7. |
 | netconf relative-ref resolution: `LoadFile`'s validator joins the bootstrap directory, while the compile and the loader use the path as given (3.9, Resolvers) | netconf | accidental | Kept in B (v5.3 item 5): Prepare records both paths, and each renderer keeps its verdict. Converging changes behavior and needs its own decision after M7. |
