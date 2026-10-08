@@ -356,6 +356,11 @@ func (s *Store) ValidCSRF(cookie, presented string) bool {
 // Rotate replaces cookie with a new id and CSRF for the same principal.
 // It does not consume an extra table slot. An unknown, expired, or stale
 // cookie is removed and returns Unauthenticated "session expired".
+// When Absolute is positive, CreatedAt stays at the original creation time
+// so rotation does not extend the absolute deadline, and LastSeen becomes now.
+// When Absolute is 0, CreatedAt and LastSeen both become now. dns has no
+// CreatedAt; its rotate resets the sliding deadline to now plus the idle TTL,
+// which ExpiresAt reports from the new LastSeen.
 func (s *Store) Rotate(cookie string) (Issued, error) {
 	if s == nil {
 		return Issued{}, kerr.New(kerr.Invalid, "session: store is required")
@@ -386,16 +391,22 @@ func (s *Store) Rotate(cookie string) (Issued, error) {
 	if !bound {
 		freshGen = old.gen
 	}
+	createdAt := now
+	created := now
+	if s.cfg.Absolute > 0 {
+		createdAt = old.public.CreatedAt
+		created = old.created
+	}
 	rec := &record{
 		public: Session{
 			ID:         id,
 			Principal:  copyPrincipal(old.public.Principal),
-			CreatedAt:  now,
+			CreatedAt:  createdAt,
 			LastSeen:   now,
 			Generation: freshGen,
 		},
 		csrf:     csrf,
-		created:  now,
+		created:  created,
 		lastSeen: now,
 		gen:      freshGen,
 	}

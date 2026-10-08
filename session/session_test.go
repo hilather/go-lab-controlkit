@@ -316,6 +316,67 @@ func TestCSRFReadBackDoesNotSlide(t *testing.T) {
 	}
 }
 
+func TestRotatePreservesAbsoluteCreation(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Idle = 8 * time.Hour
+	s := mustStore(t, cfg)
+	now := clock(t, s)
+	iss, err := s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := iss.Session.CreatedAt
+	*now = now.Add(3*time.Hour + 30*time.Minute)
+	next, err := s.Rotate(iss.Cookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Session.CreatedAt.Equal(created) {
+		t.Fatalf("created %s want %s", next.Session.CreatedAt, created)
+	}
+	if !next.Session.LastSeen.Equal(*now) {
+		t.Fatalf("last seen %s want %s", next.Session.LastSeen, *now)
+	}
+	want := created.Add(4 * time.Hour)
+	if got := s.ExpiresAt(next.Session); !got.Equal(want) {
+		t.Fatalf("expires %s want %s", got, want)
+	}
+	*now = created.Add(4*time.Hour + time.Nanosecond)
+	if _, ok := s.Lookup(next.Cookie); ok {
+		t.Fatal("rotation extended the absolute cap")
+	}
+
+	cfg = baseCfg()
+	cfg.Absolute = 0
+	cfg.IDShape = SingleID
+	s = mustStore(t, cfg)
+	now = clock(t, s)
+	iss, err = s.Create(princ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(30 * time.Minute)
+	next, err = s.Rotate(iss.Cookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Session.CreatedAt.Equal(*now) || !next.Session.LastSeen.Equal(*now) {
+		t.Fatalf("absolute 0 created %s seen %s now %s", next.Session.CreatedAt, next.Session.LastSeen, *now)
+	}
+	if !s.ExpiresAt(next.Session).Equal(now.Add(cfg.Idle)) {
+		t.Fatal("absolute 0 rotate did not reset the sliding deadline")
+	}
+	rotated := *now
+	*now = iss.Session.CreatedAt.Add(time.Hour + time.Nanosecond)
+	if _, ok := s.View(next.Cookie); !ok {
+		t.Fatal("absolute 0 rotate kept the original sliding deadline")
+	}
+	*now = rotated.Add(cfg.Idle + time.Nanosecond)
+	if _, ok := s.Lookup(next.Cookie); ok {
+		t.Fatal("absolute 0 rotate ignored the new sliding deadline")
+	}
+}
+
 func TestSessionViewDoesNotSlide(t *testing.T) {
 	s := mustStore(t, baseCfg())
 	now := clock(t, s)
