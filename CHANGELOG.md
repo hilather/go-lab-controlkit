@@ -31,6 +31,12 @@ commit log.
 - `kittest.DuplicateKeyNoEffect` appends a later copy of the first root key,
   requires the duplicate-key error, and requires the caller's snapshot to
   stay unchanged.
+- `kittest.ResetZeroTokens` adds `ZeroSNMPRefuse` (snmp from its B PR-2
+  C3a commit, P9: a zero-token bearer reset through a control adapter is
+  refused before the swap) and `ZeroNetconfFailClosed` (netconf PR-1: the
+  reset succeeds and the post-swap reload fail-closes, so the old bearer
+  and cookie stop working). `ZeroSNMP` stays snmp PR-1, today's success
+  that drops old bearers. `ZeroNetconf` stays netconf from its C3a commit.
 - Repository setup: Apache-2.0 license, README with the consumer pin matrix
   and option ledger, SECURITY.md, CODEOWNERS, and CI (`go vet`,
   `go test -race ./...`, fuzz smoke, `govulncheck`, and a `replace`/`go.work`

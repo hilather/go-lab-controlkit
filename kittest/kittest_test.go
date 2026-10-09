@@ -49,6 +49,8 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		}},
 		{"ResetZeroTokens", func(t *testing.T) { ResetZeroTokens(t, newZero(false)) }, []func(Testing){
 			func(tb Testing) { ResetZeroTokens(tb, newZero(true)) },
+			func(tb Testing) { ResetZeroTokens(tb, newZeroBug(ZeroSNMPRefuse)) },
+			func(tb Testing) { ResetZeroTokens(tb, newZeroBug(ZeroNetconfFailClosed)) },
 		}},
 		{"ApplyNoSecretRead", func(t *testing.T) {
 			ApplyNoSecretRead(t, newApply(t, ""))
@@ -421,16 +423,31 @@ func (d *resetFailRef) Reset(context.Context, string) (string, error) {
 	return d.Code(), nil
 }
 
-type zeroRef struct{ bug bool }
+type zeroRef struct {
+	// bug is the shape whose result is wrong. Empty is a correct driver.
+	bug ZeroTokenShape
+}
 
-func newZero(bug bool) *zeroRef { return &zeroRef{bug: bug} }
+func newZero(bug bool) *zeroRef {
+	if bug {
+		return newZeroBug(ZeroSNMP)
+	}
+	return &zeroRef{}
+}
+
+func newZeroBug(shape ZeroTokenShape) *zeroRef { return &zeroRef{bug: shape} }
 
 func (d *zeroRef) Shapes() []ZeroTokenShape {
-	return []ZeroTokenShape{ZeroNTPBearer, ZeroNTPLoopback, ZeroNetconf, ZeroSNMP, ZeroMaildevBearer, ZeroMaildevBasic, ZeroMaildevLoopback}
+	return []ZeroTokenShape{
+		ZeroNTPBearer, ZeroNTPLoopback,
+		ZeroNetconf, ZeroNetconfFailClosed,
+		ZeroSNMP, ZeroSNMPRefuse,
+		ZeroMaildevBearer, ZeroMaildevBasic, ZeroMaildevLoopback,
+	}
 }
 
 func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult {
-	if d.bug && shape == ZeroSNMP {
+	if d.bug != "" && shape == d.bug {
 		return ZeroTokenResult{OldBearerWorks: true, OldCookieWorks: false}
 	}
 	v := mustVer(matRole(secretA, "administrator"))
@@ -441,14 +458,19 @@ func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult
 	cookie := login(s)
 	mode := authn.ModeBearer
 	var accept func(*authn.Material) error
+	failClosed := false
 	switch shape {
 	case ZeroNTPBearer:
 		accept = authn.BearerNeedsToken(true)
 	case ZeroNTPLoopback:
 		mode = authn.ModeDevLoopbackUnauth
 		accept = authn.BearerNeedsToken(true)
-	case ZeroNetconf:
+	case ZeroNetconf, ZeroSNMPRefuse:
+		// C3a and snmp P9 refuse a zero-token bearer before the swap.
 		accept = authn.BearerNeedsToken(false)
+	case ZeroNetconfFailClosed:
+		// PR-1: Prepare succeeds. The post-swap reload fail-closes.
+		failClosed = true
 	case ZeroMaildevBasic:
 		mode = authn.ModeBearerAndBasic
 	case ZeroMaildevLoopback:
@@ -469,6 +491,13 @@ func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult
 	}
 	if st.Commit(v) {
 		rev++
+	}
+	if failClosed {
+		// failClosedAuth installs an empty verifier and clears sessions.
+		if v.Swap(matMode(authn.ModeBearer, "", "", nil)) {
+			rev++
+		}
+		s.Clear()
 	}
 	_, berr := v.AuthenticateBearer([]byte(secretA))
 	_, ok := s.Lookup(cookie)

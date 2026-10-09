@@ -61,10 +61,26 @@ type ResetFailureDriver interface {
 type ZeroTokenShape string
 
 const (
-	ZeroNTPBearer       ZeroTokenShape = "ntp-bearer"
-	ZeroNTPLoopback     ZeroTokenShape = "ntp-loopback"
-	ZeroNetconf         ZeroTokenShape = "netconf"
-	ZeroSNMP            ZeroTokenShape = "snmp"
+	ZeroNTPBearer   ZeroTokenShape = "ntp-bearer"
+	ZeroNTPLoopback ZeroTokenShape = "ntp-loopback"
+	// ZeroNetconf is netconf from its C3a commit. A zero-token bearer
+	// reset through a control adapter is refused before the swap. The
+	// old bearer and cookie still work and the revision is unchanged.
+	ZeroNetconf ZeroTokenShape = "netconf"
+	// ZeroNetconfFailClosed is netconf PR-1, today's behavior. The reset
+	// succeeds. The adapter's post-swap reload calls failClosedAuth, which
+	// installs an empty verifier and clears sessions, so the old bearer
+	// and cookie stop working and the revision changes.
+	ZeroNetconfFailClosed ZeroTokenShape = "netconf-fail-closed"
+	// ZeroSNMP is snmp PR-1, today's success that drops old bearers. A
+	// zero-token bearer reset succeeds, the old bearer and cookie stop
+	// working, and the revision changes.
+	ZeroSNMP ZeroTokenShape = "snmp"
+	// ZeroSNMPRefuse is snmp from its B PR-2 C3a commit (P9, decided by
+	// Matt 2026-10-08). A zero-token bearer reset through a control
+	// adapter is refused before the swap. The old bearer and cookie
+	// still work and the revision is unchanged.
+	ZeroSNMPRefuse      ZeroTokenShape = "snmp-refuse"
 	ZeroMaildevBearer   ZeroTokenShape = "maildev-bearer"
 	ZeroMaildevBasic    ZeroTokenShape = "maildev-basic"
 	ZeroMaildevLoopback ZeroTokenShape = "maildev-loopback"
