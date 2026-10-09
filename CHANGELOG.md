@@ -44,6 +44,17 @@ Nothing yet.
 
 ### Added
 
+- CI runs on `v*` tag pushes as well as on pull requests and `main`. The
+  concurrency group uses `github.ref`, so a tag run does not cancel a `main`
+  run.
+- Release workflow (`.github/workflows/release.yml`) and
+  `scripts/release-gate`. The gate matches the tag push's own CI run:
+  workflow `ci.yml`, event `push`, `headSha` the peeled commit, `headBranch`
+  the tag name, newest run only. Required jobs are the CI job names. The
+  tagged commit must contain `docs/releases/<tag>.md` (a Markdown heading
+  that includes the tag; a fenced copy does not count) and a `## <tag>` line
+  in `CHANGELOG.md`. There is no image and no GitHub Release. `apidiff`
+  stays a required check from `v1.0.0`, not in this workflow.
 - `kittest.DuplicateKeyNoEffect` appends a later copy of the first root key,
   requires the duplicate-key error, requires the caller's snapshot to stay
   unchanged, and requires Check not to modify the caller's document or the
