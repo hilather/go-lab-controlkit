@@ -66,10 +66,12 @@ Nothing yet.
   Check, checks the duplicate first, then the good document. It requires
   the duplicate-key error, requires the caller's snapshot to stay
   unchanged, and requires Check not to modify the caller's document or
-  the duplicate document. An idempotent side effect is caught only for a
-  validator that runs on the duplicate document: a nested Open validator
-  that sets a flag or writes the same byte on every call is caught. The
-  root validator does not run once the duplicate key fails the parse.
+  the duplicate document. A nested Open validator runs on the duplicate
+  document, so a flag, gauge or last-value field it sets, or a byte it
+  writes, is caught even when every call sets the same value. The root
+  validator does not run on that failing parse, so a root-only flag,
+  gauge or last-value change is not caught. A write into the caller's
+  document is caught when the good document is checked.
   Consumers run it in their C4 commit. PR-1 only lists the validators.
 - `kittest.ResetZeroTokens` adds `ZeroSNMPRefuse` (snmp from its B PR-2
   C3a commit, P9: a zero-token bearer reset through a control adapter is
