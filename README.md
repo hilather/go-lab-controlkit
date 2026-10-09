@@ -30,7 +30,7 @@ folds the changelog before Helm tags `v0.1.0`. Muse never tags.
 - `idem`: bounded LRU and FIFO idempotency cache.
 - `ratelimit`: capped per-key buckets and a per-call global bucket.
 - `mcpstrict`: duplicate JSON keys, typed subtrees, and open fields.
-- `kittest`: conformance suites that take injected drivers.
+- `kittest`: conformance suites that take injected drivers. `DuplicateKeyNoEffect` checks that a later duplicate key leaves no observable validator effect.
 
 ## Rules
 
@@ -73,11 +73,12 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 | `ratelimit` `MaxKeys` 0 `*` | uncapped in dns, ntp REST, snmp, maildev | accidental, security-relevant | Resolved: there is no such value in the kit (constructor error). P6 moves the uncapped limiters in PR-2. |
 | nil-verifier administrator `*` | maildev (REST, MCP, compat), dns | accidental, security-relevant | Resolved: the kit never offers it, and P5 deletes the facade copies in PR-2. |
 | `authn.FileOpts.Harden` = false `*` | all six, in PR-1 | transitional: keeps PR-1 zero-change (3.2) | Resolved: each consumer's C3a commit sets true, and the option is removed before v1.0.0 (M7). |
-| `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Owned by dns before v1.0.0: the P8 warning plus a kittest pin. Token floor enforcement: deferred, warn-only in B (Q8). |
+| `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Decided by Matt (2026-10-08, Q8). Timeline: (1) now, a dns PR outside B makes the examples/main-lab README generate tokens of at least 32 bytes (its CHANGELOG line should also flag shorter tokens as deprecated, so operators get a release before the refusal); (2) dns's next minor release, outside B, refuses tokens shorter than 32 bytes, with the CHANGELOG deprecation note and a breaking call-out; (3) B follows dns `main` at M6: if (2) has landed, dns's facade sets `MinSecretBytes: 32` and P8 is omitted (its counter could never increment); only if M6 ships first does B keep P8's warning plus a kittest pin, and (2) then sets 32 in the facade. B never loosens what dns `main` enforces. |
 | `authn.Duplicates` = FirstMatchWins `*` | dns | accidental | Owned by dns before v1.0.0: a kittest pin and a ledger entry. Converging would reject dns configs that boot today, which needs its own decision. |
-| `authn.Accept` (zero-token predicate) | ntp, netconf: refuse; snmp, maildev, syslog: none | product today | Kept in B. P9 (Q11, an open decision) is the post-migration convergence. |
+| `authn.Accept` (zero-token predicate) | ntp, netconf: refuse; snmp: refuse from its B PR-2 (P9); maildev, syslog: none | product (snmp converges in B) | Decided by Matt (2026-10-08, Q11/P9). snmp, ntp and netconf refuse a zero-token bearer config at boot (when management binds or a stdio pin is built, unchanged) and at reset through a control adapter (REST, MCP over HTTP, or stdio; C3a). A reset with no adapter attached, such as an app-level test, runs no predicate, as today. snmp's `TestReloadAuthDropsEmptyTokens` flips to a refusal. maildev and syslog are exempt and keep `Accept` unset. |
 | `FileOpts.Line`, `Resolve`, `SkipMissing`; `DNSBundle`; dns identity defaults | per repo | product (documented file formats and path rules) | Kept. |
 | `authn.LocalhostIsLoopback` | ntp, maildev: true; dns: false | accidental | Owned per repo. It only matters in dev-loopback mode. Revisit after M7. |
+| dns bearer-profile loopback administrator (not a kit option) | dns | accidental, security-relevant | Decided by Matt (2026-10-08). A standalone dns PR outside B removes it: under the bearer profile, a loopback request without a bearer is no longer administrator. `dev-loopback-unauth` is unchanged and health stays unauthenticated. B keeps dns identity unchanged, and the kit never offers it. |
 | netconf relative-ref resolution: `LoadFile`'s validator joins the bootstrap directory, while the compile and the loader use the path as given (3.9, Resolvers) | netconf | accidental | Kept in B (v5.3 item 5): Prepare records both paths, and each renderer keeps its verdict. Converging changes behavior and needs its own decision after M7. |
 | `scope.Table` fields; dns `Evaluator`; `CapAuthorizer`/`ToolExtra` | per repo | product (role models; dns change policy) | Kept. |
 | `session.Config` (TTL, idle, cap, `AtCap`, `IDShape`, `CSRFCompare`), cookie and header names | five vs dns | product (dns console design, `docs/08`) | Kept. |

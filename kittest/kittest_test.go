@@ -49,6 +49,8 @@ func TestSuitesReferenceAndSeeded(t *testing.T) {
 		}},
 		{"ResetZeroTokens", func(t *testing.T) { ResetZeroTokens(t, newZero(false)) }, []func(Testing){
 			func(tb Testing) { ResetZeroTokens(tb, newZero(true)) },
+			func(tb Testing) { ResetZeroTokens(tb, newZeroBug(ZeroSNMPRefuse)) },
+			func(tb Testing) { ResetZeroTokens(tb, newZeroBug(ZeroNetconfFailClosed)) },
 		}},
 		{"ApplyNoSecretRead", func(t *testing.T) {
 			ApplyNoSecretRead(t, newApply(t, ""))
@@ -421,16 +423,31 @@ func (d *resetFailRef) Reset(context.Context, string) (string, error) {
 	return d.Code(), nil
 }
 
-type zeroRef struct{ bug bool }
+type zeroRef struct {
+	// bug is the shape whose result is wrong. Empty is a correct driver.
+	bug ZeroTokenShape
+}
 
-func newZero(bug bool) *zeroRef { return &zeroRef{bug: bug} }
+func newZero(bug bool) *zeroRef {
+	if bug {
+		return newZeroBug(ZeroSNMP)
+	}
+	return &zeroRef{}
+}
+
+func newZeroBug(shape ZeroTokenShape) *zeroRef { return &zeroRef{bug: shape} }
 
 func (d *zeroRef) Shapes() []ZeroTokenShape {
-	return []ZeroTokenShape{ZeroNTPBearer, ZeroNTPLoopback, ZeroNetconf, ZeroSNMP, ZeroMaildevBearer, ZeroMaildevBasic, ZeroMaildevLoopback}
+	return []ZeroTokenShape{
+		ZeroNTPBearer, ZeroNTPLoopback,
+		ZeroNetconf, ZeroNetconfFailClosed,
+		ZeroSNMP, ZeroSNMPRefuse,
+		ZeroMaildevBearer, ZeroMaildevBasic, ZeroMaildevLoopback,
+	}
 }
 
 func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult {
-	if d.bug && shape == ZeroSNMP {
+	if d.bug != "" && shape == d.bug {
 		return ZeroTokenResult{OldBearerWorks: true, OldCookieWorks: false}
 	}
 	v := mustVer(matRole(secretA, "administrator"))
@@ -441,14 +458,19 @@ func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult
 	cookie := login(s)
 	mode := authn.ModeBearer
 	var accept func(*authn.Material) error
+	failClosed := false
 	switch shape {
 	case ZeroNTPBearer:
 		accept = authn.BearerNeedsToken(true)
 	case ZeroNTPLoopback:
 		mode = authn.ModeDevLoopbackUnauth
 		accept = authn.BearerNeedsToken(true)
-	case ZeroNetconf:
+	case ZeroNetconf, ZeroSNMPRefuse:
+		// C3a and snmp P9 refuse a zero-token bearer before the swap.
 		accept = authn.BearerNeedsToken(false)
+	case ZeroNetconfFailClosed:
+		// PR-1: Prepare succeeds. The post-swap reload fail-closes.
+		failClosed = true
 	case ZeroMaildevBasic:
 		mode = authn.ModeBearerAndBasic
 	case ZeroMaildevLoopback:
@@ -469,6 +491,13 @@ func (d *zeroRef) Apply(_ context.Context, shape ZeroTokenShape) ZeroTokenResult
 	}
 	if st.Commit(v) {
 		rev++
+	}
+	if failClosed {
+		// failClosedAuth installs an empty verifier and clears sessions.
+		if v.Swap(matMode(authn.ModeBearer, "", "", nil)) {
+			rev++
+		}
+		s.Clear()
 	}
 	_, berr := v.AuthenticateBearer([]byte(secretA))
 	_, ok := s.Lookup(cookie)
@@ -1505,6 +1534,79 @@ func (d *strictRef) Call(_ context.Context, _ string, args json.RawMessage) (str
 		return "invalid", d.rev
 	}
 	return "ok", d.rev
+}
+
+func TestDuplicateKeyNoEffect(t *testing.T) {
+	doc := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
+	calls := 0
+	pure := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(json.RawMessage) error {
+			calls++
+			return nil
+		},
+	}}
+	DuplicateKeyNoEffect(t, pure, doc, func() string { return "quiet" })
+	// The good document and the later duplicate both reach /view.
+	// The root validator would not run on the duplicate.
+	if calls != 2 {
+		t.Fatalf("validator calls %d", calls)
+	}
+
+	n := 0
+	seeded := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(json.RawMessage) error {
+			n++
+			return nil
+		},
+	}}
+	fake := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, seeded, doc, func() string { return fmt.Sprintf("%d", n) })
+	})
+	if !fake.failed || len(fake.msgs) != 1 || !strings.Contains(fake.msgs[0], "snapshot changed") {
+		t.Fatalf("seeded: failed=%v msgs=%v", fake.failed, fake.msgs)
+	}
+}
+
+func TestDuplicateKeyNoEffectRejectsInputWrite(t *testing.T) {
+	doc := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
+	// Check runs on the good document first. Write only on the later
+	// call, which is the duplicate document's nested value. That
+	// RawMessage aliases the duplicate buffer.
+	calls := 0
+	mut := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(m json.RawMessage) error {
+			calls++
+			if calls >= 2 && len(m) > 0 {
+				m[0] = 'X'
+			}
+			return nil
+		},
+	}}
+	fake := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, mut, doc, func() string { return "quiet" })
+	})
+	if !fake.failed || len(fake.msgs) != 1 || !strings.Contains(fake.msgs[0], "duplicate document bytes changed") {
+		t.Fatalf("write: failed=%v msgs=%v", fake.failed, fake.msgs)
+	}
+
+	// The same byte on every call mutates doc during the first Check.
+	// The duplicate is built from that buffer, so the later write is a
+	// no-op and only the caller's bytes show it. {"n":1} becomes {"n":9}.
+	fixed := json.RawMessage(`{"n":1}`)
+	every := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/n": func(m json.RawMessage) error {
+			if len(m) > 0 {
+				m[0] = '9'
+			}
+			return nil
+		},
+	}}
+	wrote := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, every, fixed, func() string { return "quiet" })
+	})
+	if !wrote.failed || len(wrote.msgs) != 1 || wrote.msgs[0] != "document bytes changed" {
+		t.Fatalf("every write: failed=%v msgs=%v", wrote.failed, wrote.msgs)
+	}
 }
 
 func tdir(t *testing.T) string {

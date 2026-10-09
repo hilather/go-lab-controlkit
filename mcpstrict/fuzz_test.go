@@ -46,15 +46,19 @@ func FuzzCheck(f *testing.F) {
 		if got != dup {
 			t.Fatalf("duplicate check=%v oracle=%v raw=%q", err, dup, raw)
 		}
-		// Byte bound for the no-spec call. testing.AllocsPerRun pins
-		// GOMAXPROCS to 1 and samples around a warm-up so a process-wide
-		// TotalAlloc delta is not mixed with other fuzz workers. A raw
-		// ReadMemStats inside the fuzz function is noisy under -race and
-		// when workers run together, so tiny inputs are skipped: fixed
-		// overhead dominates k*len there, and the amplification shows up
-		// on larger bodies. 32× plus 1 MiB still fails the old depth copy
-		// (hundreds of times the input) and leaves room for the duplicate
-		// key map on a wide object.
+		// Byte bound for the no-spec call only. Spec.Typed is not covered:
+		// a Typed /* walk over a flat array measured about 66× to 71×.
+		// testing.AllocsPerRun pins GOMAXPROCS to 1 and samples around a
+		// warm-up so a process-wide TotalAlloc delta is not mixed with
+		// other fuzz workers. A raw ReadMemStats inside the fuzz function
+		// is noisy under -race and when workers run together, so tiny
+		// inputs are skipped: fixed overhead dominates k*len there. A
+		// wide object with Spec{} measured about 20× (duplicate-key map
+		// and key strings) and stayed linear. The pair-array shape, a
+		// flat array of small two-key objects, measured about 41.15× and
+		// is pinned by pairAllocLimit at 58× + 256 KiB. 58× plus 1 MiB
+		// covers that shape, and still fails the old depth copy
+		// (hundreds of times the input).
 		if len(raw) >= fuzzAllocMin {
 			avg := bytesPerRun(1, func() { _ = Check(raw, Spec{}) })
 			limit := float64(fuzzAllocMul*len(raw) + fuzzAllocSlack)
@@ -66,10 +70,13 @@ func FuzzCheck(f *testing.F) {
 }
 
 // fuzzAllocMin skips the bound on tiny inputs. fuzzAllocMul and
-// fuzzAllocSlack bound TotalAlloc for one Spec{} Check.
+// fuzzAllocSlack bound TotalAlloc for one Spec{} Check. They do not
+// bound a non-empty Spec.Typed. A wide Spec{} object is about 20×.
+// The pair-array shape, a flat array of small two-key objects, is
+// about 41.15× and stays under 58×.
 const (
 	fuzzAllocMin   = 2048
-	fuzzAllocMul   = 32
+	fuzzAllocMul   = 58
 	fuzzAllocSlack = 1 << 20
 )
 
