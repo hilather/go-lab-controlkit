@@ -5,18 +5,7 @@ commit log.
 
 ## Unreleased
 
-### Changed
-
-- `kittest.DuplicateKeyNoEffect` is stricter. It takes the snapshot and
-  checks the duplicate document before the good one, so a validator with an
-  idempotent side effect (a flag, a gauge, a last-value field, or the same
-  byte written on every call) that passed under v0.1.0 now fails.
-- The release gate takes `-tag` and `-sha`. `release.yml` passes the tag and
-  its peeled commit explicitly instead of overriding `GITHUB_SHA`,
-  `GITHUB_REF` and `GITHUB_REF_NAME` in step env, which GitHub ignores, so a
-  manual `workflow_dispatch` re-run started from a branch now works.
-- Together these close two of the known gaps listed in
-  [v0.1.0's release notes](docs/releases/v0.1.0.md#known-gaps-and-follow-ups).
+Nothing yet.
 
 ## v0.1.0
 
@@ -66,11 +55,24 @@ commit log.
   that includes the tag; a fenced copy does not count) and a `## <tag>` line
   in `CHANGELOG.md`. There is no image and no GitHub Release. `apidiff`
   stays a required check from `v1.0.0`, not in this workflow.
-- `kittest.DuplicateKeyNoEffect` appends a later copy of the first root key,
-  requires the duplicate-key error, requires the caller's snapshot to stay
-  unchanged, and requires Check not to modify the caller's document or the
-  duplicate document. Consumers run it in their C4 commit. PR-1 only lists
-  the validators.
+  `release.yml` passes the tag and its peeled commit to
+  `release-gate -require-ci` as `-tag` and `-sha`, because GitHub ignores
+  step-env overrides of `GITHUB_SHA`, `GITHUB_REF` and `GITHUB_REF_NAME`.
+  A `workflow_dispatch` re-gate may be started from a branch, and the CI
+  run it matches is still the tag push's own run. `-tag` without `-sha`
+  skips the SHA cross-check.
+- `kittest.DuplicateKeyNoEffect` appends a later copy of the first root
+  key. It takes the snapshot and builds the duplicate document before any
+  Check, checks the duplicate first, then the good document. It requires
+  the duplicate-key error, requires the caller's snapshot to stay
+  unchanged, and requires Check not to modify the caller's document or
+  the duplicate document. A nested Open validator runs on the duplicate
+  document, so a flag, gauge or last-value field it sets, or a byte it
+  writes, is caught even when every call sets the same value. The root
+  validator does not run on that failing parse, so a root-only flag,
+  gauge or last-value change is not caught. A write into the caller's
+  document is caught when the good document is checked.
+  Consumers run it in their C4 commit. PR-1 only lists the validators.
 - `kittest.ResetZeroTokens` adds `ZeroSNMPRefuse` (snmp from its B PR-2
   C3a commit, P9: a zero-token bearer reset through a control adapter is
   refused before the swap) and `ZeroNetconfFailClosed` (netconf PR-1: the
