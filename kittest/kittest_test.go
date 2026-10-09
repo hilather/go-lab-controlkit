@@ -1567,6 +1567,29 @@ func TestDuplicateKeyNoEffect(t *testing.T) {
 	}
 }
 
+func TestDuplicateKeyNoEffectRejectsInputWrite(t *testing.T) {
+	doc := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
+	// Check runs on the good document first. Write only on the later
+	// call, which is the duplicate document's nested value. That
+	// RawMessage aliases the duplicate buffer.
+	calls := 0
+	mut := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(m json.RawMessage) error {
+			calls++
+			if calls >= 2 && len(m) > 0 {
+				m[0] = 'X'
+			}
+			return nil
+		},
+	}}
+	fake := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, mut, doc, func() string { return "quiet" })
+	})
+	if !fake.failed || len(fake.msgs) != 1 || !strings.Contains(fake.msgs[0], "duplicate document bytes changed") {
+		t.Fatalf("write: failed=%v msgs=%v", fake.failed, fake.msgs)
+	}
+}
+
 func tdir(t *testing.T) string {
 	if t == nil {
 		dir, err := os.MkdirTemp("", "kittest")

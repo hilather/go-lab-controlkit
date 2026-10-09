@@ -37,8 +37,9 @@ commit log.
 ### Added
 
 - `kittest.DuplicateKeyNoEffect` appends a later copy of the first root key,
-  requires the duplicate-key error, and requires the caller's snapshot to
-  stay unchanged.
+  requires the duplicate-key error, requires the caller's snapshot to stay
+  unchanged, and requires Check not to modify the duplicate document.
+  Consumers run it in their C4 commit. PR-1 only lists the validators.
 - `kittest.ResetZeroTokens` adds `ZeroSNMPRefuse` (snmp from its B PR-2
   C3a commit, P9: a zero-token bearer reset through a control adapter is
   refused before the swap) and `ZeroNetconfFailClosed` (netconf PR-1: the

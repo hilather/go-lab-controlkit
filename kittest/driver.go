@@ -2,9 +2,12 @@
 // their own wiring. The suites take injected drivers. This package does
 // not import an MCP SDK.
 //
-// DuplicateKeyNoEffect is for a consumer's PR-1. It feeds mcpstrict a
-// document that repeats a root key and checks that the caller's snapshot
-// is unchanged after Check rejects it.
+// DuplicateKeyNoEffect is for a consumer's C4 commit. PR-1 lists the
+// Open validators that commit will register; C4 registers them and runs
+// this helper (plan section 6.0 step 5). It feeds mcpstrict a document
+// that repeats a root key and checks that the caller's snapshot is
+// unchanged after Check rejects it, and that Check did not modify the
+// duplicate document.
 package kittest
 
 import (
