@@ -178,7 +178,19 @@ func ResetUnreadableSecret(t Testing, d ResetFailureDriver) {
 	}
 }
 
-// ResetZeroTokens checks each shape the driver claims against the repo matrix.
+// ResetZeroTokens checks each shape the driver claims against the repo
+// matrix. An unknown shape is fatal.
+//
+// ZeroNTPBearer and ZeroNetconf (netconf from its C3a commit) are refused:
+// validation_failed, the old bearer and cookie still work, and the revision
+// is unchanged. ZeroNTPLoopback and the maildev shapes succeed: the old
+// bearer and cookie stop working and the revision changes. ZeroSNMP is
+// snmp PR-1, that same success, which drops old bearers. ZeroSNMPRefuse is
+// snmp from its B PR-2 C3a commit (P9, decided by Matt 2026-10-08): the
+// same refusal, before the swap. ZeroNetconfFailClosed is netconf PR-1:
+// the reset succeeds and the adapter's post-swap reload calls
+// failClosedAuth, so the old bearer and cookie stop working and the
+// revision changes.
 func ResetZeroTokens(t Testing, d ZeroTokenDriver) {
 	t.Helper()
 	ctx := context.Background()
@@ -203,13 +215,15 @@ func zeroTokenWant() map[ZeroTokenShape]ZeroTokenResult {
 	fail := ZeroTokenResult{Code: "validation_failed", OldBearerWorks: true, OldCookieWorks: true, RevisionUnchanged: true}
 	ok := ZeroTokenResult{OldBearerWorks: false, OldCookieWorks: false, RevisionUnchanged: false}
 	return map[ZeroTokenShape]ZeroTokenResult{
-		ZeroNTPBearer:       fail,
-		ZeroNTPLoopback:     ok,
-		ZeroNetconf:         fail,
-		ZeroSNMP:            ok,
-		ZeroMaildevBearer:   ok,
-		ZeroMaildevBasic:    ok,
-		ZeroMaildevLoopback: ok,
+		ZeroNTPBearer:         fail,
+		ZeroNTPLoopback:       ok,
+		ZeroNetconf:           fail,
+		ZeroNetconfFailClosed: ok,
+		ZeroSNMP:              ok,
+		ZeroSNMPRefuse:        fail,
+		ZeroMaildevBearer:     ok,
+		ZeroMaildevBasic:      ok,
+		ZeroMaildevLoopback:   ok,
 	}
 }
 

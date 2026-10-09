@@ -702,16 +702,130 @@ func kindIs(err error, k kerr.Kind) bool {
 	return ok && got == k
 }
 
-// allocSlack is fixed overhead on top of 8× the input: pattern compile,
-// the path buffer (it doubles up to the longest pointer), and duplicate
-// detection's decoded key strings. Open matching does not copy a value
-// per match. A flat "*" pattern calls the validator once per element and
-// keeps at most one failure. 8× still fails the pre-fix Check, which
+// allocSlack is fixed overhead on top of a linear term: pattern compile
+// and the path buffer (it doubles up to the longest pointer). Open
+// matching does not copy a value per match. A flat "*" pattern calls the
+// validator once per element and keeps at most one failure.
+//
+// Check's allocation is linear in the input. No shape measured on
+// 2026-10-08 grew faster than linearly. From about 0.25 MiB to 2 MiB,
+// doubling the input multiplied TotalAlloc by about 1.97× to 2.02×.
+// The committed -race probe is smaller: 64 KiB to 128 KiB grew 2.10×
+// for a root Typed decode and 2.06× for a flat Typed "/*" walk. The
+// doubling check fails above 2.6×. allocLimit's 8× covers three
+// fixtures, each at most about 3.5×: a nested array, a single-key deep
+// object, and a flat array of zeros. A flat array of two-key objects
+// is about 41× and uses pairAllocLimit. Wide objects and Spec.Typed
+// have their own limits. 8× still fails the pre-fix Check, which
 // allocated hundreds of times the input (KS-B1, KS-B1b).
 const allocSlack = 256 << 10
 
+// allocLimit bounds three fixtures: a nested array (deep-array/empty
+// and deep-array/open), a single-key deep object (deep-object/empty,
+// deep-object/open, and deep-object/open-levels), and a flat array of
+// zeros (flat-array/empty, flat-array/open, flat-array/star, and
+// flat-array/star-wide). Each measured at most about 3.5×. It does not
+// cover a wide object, a Typed spec, or a flat array of two-key objects.
 func allocLimit(n int) uint64 {
 	return uint64(8*n) + allocSlack
+}
+
+const wideAllocMul = 28
+
+// wideAllocLimit bounds a wide object of many short keys ("k0000000":0,
+// ...) for Spec{} (wide-object/empty), one shallow Open match
+// (wide-object/open, "/k0000000"), and Open "/*" (wide-object/star).
+// On 2026-10-08 that shape allocated 19.59× the input without -race and
+// 20.20× with -race, from 256 KiB through 2 MiB. The cost is one
+// duplicate-key map for the whole object plus one decoded string per
+// key. The ratio was flat. Doubling the input doubled TotalAlloc,
+// including the 64 KiB to 128 KiB -race probe (2.00× for this shape).
+// 28× is 1.4× that 20.20× worst ratio, rounded (1.39× headroom). The
+// limit is linear in the input. Slack is allocSlack. A flat array of
+// two-key objects is a map per object and uses pairAllocLimit. Typed
+// specs use typedAllocLimit or typedStarAllocLimit.
+func wideAllocLimit(n int) uint64 {
+	return uint64(wideAllocMul*n) + allocSlack
+}
+
+const pairAllocMul = 58
+
+// pairAllocLimit bounds a flat array of small two-key objects
+// ({"a":0,"b":0}, ...) for Spec{} (pair-array/empty) and for Open "/*"
+// (pair-array/star). On 2026-10-08, Go 1.26.9, that shape allocated
+// 41.14× the input from 64 KiB through 2 MiB, with and without -race.
+// The worst ratio was 41.15× (Open "/*", -race, 64 KiB). The cost is
+// the duplicate-key map parseObject allocates on the second key of
+// every object, plus one decoded string per key. "/*" added about 200
+// bytes, not a copy per element. Doubling growth was 2.00×, including
+// the 64 KiB to 128 KiB -race probe. 58× is 1.4× the 41.15× worst
+// ratio, rounded (1.41× headroom). Slack is allocSlack. The 8×
+// fixtures are a nested array, a single-key deep object, and a flat
+// array of zeros. This shape is none of those.
+func pairAllocLimit(n int) uint64 {
+	return uint64(pairAllocMul*n) + allocSlack
+}
+
+const typedAllocMul = 60
+
+// typedAllocLimit bounds a root Typed entry and a Typed "/*" walk over
+// the keys of a wide object. The fixtures are typed/flat-array (root
+// Typed on a flat array of numbers), typed/wide-object (root Typed on
+// a wide object), and wide/typed-star (Typed "/*", the filterTyped
+// path). On 2026-10-08 a non-empty Typed map decoded the input once
+// with encoding/json, the same decode as before and as the MCP SDK. A
+// flat array of numbers with a root Typed entry was about 43× (43.07×,
+// the same with -race). A wide object with a root Typed entry was about
+// 31× (31.44× under -race, 30.21× without), the decode on top of the
+// duplicate-key map. A Typed "/*" walk over that wide object's keys was
+// about 33.3× without -race and 34.52× with it (wide/typed-star in the
+// 2026-10-08 table). That walk is above wideAllocLimit and under this
+// limit. Root Typed returns before the child walk, so it does not pin
+// filterTyped. The flat array's Typed "/*" walk is filterTypedIndex,
+// about 71×, and uses typedStarAllocLimit. The pinned root shapes
+// stayed linear on the 0.25 MiB to 2 MiB matrix (doubling growth about
+// 1.97× to 2.00×). The committed -race probe, 64 KiB to 128 KiB, grew
+// 2.10× for the flat root Typed decode. 60× is 1.4× the flat 43.07×,
+// rounded (1.39× headroom). That is the higher of the pinned root
+// shapes, so the wide object and its Typed "/*" walk use this limit
+// too. The limit is linear in the input. Slack is allocSlack.
+func typedAllocLimit(n int) uint64 {
+	return uint64(typedAllocMul*n) + allocSlack
+}
+
+const typedStarAllocMul = 99
+
+// typedStarAllocLimit bounds a Typed "/*" walk over every element of a
+// flat array of numbers (flat/typed-star, filterTypedIndex). It does
+// not cover a wide object's Typed "/*" walk (wide/typed-star,
+// filterTyped, typedAllocLimit) or a flat array of two-key objects
+// (pairAllocLimit). On 2026-10-08 that walk allocated 65.84× to 66.53×
+// the input without -race and 69.97× to 71.06× with -race, from about
+// 256 KiB through 2 MiB. The worst ratio is 71.06×. The extra over the
+// root decode is one filtered pattern slice per element. On that
+// matrix, doubling the input multiplied TotalAlloc by 1.98× to 2.02×.
+// The committed -race probe, 64 KiB to 128 KiB, grew 2.06×. The walk
+// is linear. The check fails above 2.6×. 99× is 1.4× that 71.06×,
+// rounded (1.39× headroom). Slack is allocSlack.
+func typedStarAllocLimit(n int) uint64 {
+	return uint64(typedStarAllocMul*n) + allocSlack
+}
+
+// allocProbe is the smaller wide, pair, and typed input. The doubling
+// check uses twice that. Without -race the larger input is about 1 MiB.
+// A 2 MiB partner is not in the test: a typed decode of 2 MiB takes
+// several seconds a sample. Under -race the probe is 64 KiB (larger
+// input about 128 KiB). A 256 KiB typed pair took about 9 s under -race
+// on 2026-10-08, and the ratio had already flattened by 256 KiB (20.20×
+// wide, 43.04× flat Typed, 31.43× wide Typed, 34.52× wide Typed "/*",
+// 65.97× flat Typed "/*" without -race and 71.04× with it). The two-key
+// array was 41.14× from 64 KiB up, on Go 1.26.9. These cases use this
+// same probe.
+func allocProbe() int {
+	if checkAllocRace() {
+		return 64 << 10
+	}
+	return 512 << 10
 }
 
 func TestCheckAllocBound(t *testing.T) {
@@ -833,6 +947,128 @@ func TestCheckAllocBound(t *testing.T) {
 		}
 		measureOpenAlloc(t, deepObj, Spec{Open: measure})
 	})
+
+	// Wide objects, two-key object arrays, and Spec.Typed exceed
+	// allocLimit and have their own linear limits. Each subtest measures
+	// n and about 2n so a super-linear regression fails even when one
+	// size stays under the multiplier. Growth above 2.6× fails. On the
+	// 0.25 MiB to 2 MiB matrix, measured growth was at most about 2.02×.
+	// The committed -race probe, 64 KiB to 128 KiB, grew 2.10× for a
+	// root Typed decode and 2.06× for a flat Typed "/*" walk.
+	probe := allocProbe()
+	wideSmall, wideSmallKeys := wideZeroObject(probe)
+	wideLarge, wideLargeKeys := wideZeroObject(probe * 2)
+	flatSmall := flatZeroArray(probe)
+	flatLarge := flatZeroArray(probe * 2)
+	if len(wideLarge) < len(wideSmall)*19/10 || len(flatLarge) < len(flatSmall)*19/10 {
+		t.Fatalf("probe sizes wide %d %d flat %d %d", len(wideSmall), len(wideLarge), len(flatSmall), len(flatLarge))
+	}
+
+	t.Run("wide-object/empty", func(t *testing.T) {
+		measureAllocPair(t, wideSmall, wideLarge, Spec{}, wideAllocLimit)
+	})
+	t.Run("wide-object/open", func(t *testing.T) {
+		const pat = "/k0000000"
+		var got []byte
+		var calls int
+		spec := Spec{Open: map[string]func(json.RawMessage) error{
+			pat: func(m json.RawMessage) error {
+				calls++
+				got = append([]byte(nil), m...)
+				return nil
+			},
+		}}
+		if err := Check(wideSmall, spec); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 || string(got) != "0" {
+			t.Fatalf("calls %d got %q", calls, got)
+		}
+		measureAllocPair(t, wideSmall, wideLarge, Spec{Open: map[string]func(json.RawMessage) error{pat: noop}}, wideAllocLimit)
+	})
+	t.Run("wide-object/star", func(t *testing.T) {
+		calls := 0
+		spec := Spec{Open: map[string]func(json.RawMessage) error{
+			"/*": func(m json.RawMessage) error {
+				calls++
+				if len(m) != 1 || m[0] != '0' || cap(m) != len(m) {
+					t.Fatalf("raw %q cap %d len %d", m, cap(m), len(m))
+				}
+				return nil
+			},
+		}}
+		if err := Check(wideSmall, spec); err != nil {
+			t.Fatal(err)
+		}
+		if calls != wideSmallKeys {
+			t.Fatalf("calls %d want %d", calls, wideSmallKeys)
+		}
+		measureAllocPair(t, wideSmall, wideLarge, Spec{Open: map[string]func(json.RawMessage) error{"/*": noop}}, wideAllocLimit)
+	})
+	// A root Typed entry forces one encoding/json decode of the whole
+	// document. The flat array's elements are numbers, so the key set
+	// does not reject them. The wide object's ratio is lower (the object
+	// decode plus the duplicate-key map) and still above wideAllocLimit,
+	// so it has this limit too. The key set allows every key of the
+	// larger object; absent keys are allowed, so the smaller object passes.
+	typedFlat := Spec{Typed: map[string]KeySet{"": {Keys: map[string]bool{"unused": true}}}}
+	typedWide := wideTypedSpec(wideLargeKeys)
+	t.Run("typed/flat-array", func(t *testing.T) {
+		measureAllocPair(t, flatSmall, flatLarge, typedFlat, typedAllocLimit)
+	})
+	t.Run("typed/wide-object", func(t *testing.T) {
+		measureAllocPair(t, wideSmall, wideLarge, typedWide, typedAllocLimit)
+	})
+	// A Typed "/*" walks every element of the flat array. The elements
+	// are numbers, so the key set does not reject them. The cost above
+	// the root decode is one filtered pattern slice per element.
+	// typedAllocLimit (60×) does not cover it. The same probe as the
+	// other typed cases keeps the -race run to a few seconds.
+	typedStar := Spec{Typed: map[string]KeySet{"/*": {Keys: map[string]bool{"unused": true}}}}
+	t.Run("flat/typed-star", func(t *testing.T) {
+		measureAllocPair(t, flatSmall, flatLarge, typedStar, typedStarAllocLimit)
+	})
+
+	// Each object has two keys, so parseObject allocates a duplicate-key
+	// map per element. That is outside the three allocLimit fixtures.
+	// Open "/*" visits each object and must not copy it.
+	pairSmall, pairSmallN := twoKeyObjectArray(probe)
+	pairLarge, pairLargeN := twoKeyObjectArray(probe * 2)
+	t.Run("pair-array/empty", func(t *testing.T) {
+		measureAllocPair(t, pairSmall, pairLarge, Spec{}, pairAllocLimit)
+	})
+	t.Run("pair-array/star", func(t *testing.T) {
+		calls := 0
+		spec := Spec{Open: map[string]func(json.RawMessage) error{
+			"/*": func(m json.RawMessage) error {
+				calls++
+				if string(m) != `{"a":0,"b":0}` || cap(m) != len(m) {
+					t.Fatalf("raw %q cap %d len %d", m, cap(m), len(m))
+				}
+				return nil
+			},
+		}}
+		if err := Check(pairSmall, spec); err != nil {
+			t.Fatal(err)
+		}
+		if calls != pairSmallN {
+			t.Fatalf("calls %d want %d", calls, pairSmallN)
+		}
+		if pairLargeN < pairSmallN*19/10 {
+			t.Fatalf("objects %d %d", pairSmallN, pairLargeN)
+		}
+		measureAllocPair(t, pairSmall, pairLarge, Spec{Open: map[string]func(json.RawMessage) error{"/*": noop}}, pairAllocLimit)
+	})
+
+	// Typed "/*" on a wide object calls filterTyped once per key. Root
+	// Typed returns before that walk. flat/typed-star calls
+	// filterTypedIndex instead. The values are numbers, so the key set
+	// does not reject them. About 34.5× under -race: above wideAllocLimit
+	// and under typedAllocLimit.
+	typedWideStar := Spec{Typed: map[string]KeySet{"/*": {Keys: map[string]bool{"unused": true}}}}
+	t.Run("wide/typed-star", func(t *testing.T) {
+		measureAllocPair(t, wideSmall, wideLarge, typedWideStar, typedAllocLimit)
+	})
 }
 
 func measureOpenAlloc(t *testing.T, raw []byte, spec Spec) {
@@ -843,6 +1079,39 @@ func measureOpenAlloc(t *testing.T, raw []byte, spec Spec) {
 	if n > limit {
 		t.Fatalf("allocated %d bytes, limit %d, input %d", n, limit, len(raw))
 	}
+}
+
+// measureAllocPair bounds both sizes and fails if doubling the input
+// multiplies TotalAlloc by more than 2.6. On 2026-10-08 the 0.25 MiB to
+// 2 MiB matrix grew by about 1.97× to 2.02×. The committed -race probe,
+// 64 KiB to 128 KiB, grew 2.10× for a root Typed decode and 2.06× for a
+// flat Typed "/*" walk. A flat array of two-key objects grew 2.00× at
+// those same probe sizes.
+func measureAllocPair(t *testing.T, small, large []byte, spec Spec, limit func(int) uint64) {
+	t.Helper()
+	n1 := measureOneAlloc(t, small, spec, limit)
+	n2 := measureOneAlloc(t, large, spec, limit)
+	if len(large) < len(small)*19/10 || len(large) > len(small)*21/10 {
+		t.Fatalf("input %d -> %d is not about double", len(small), len(large))
+	}
+	if n1 == 0 || n2*10 > n1*26 {
+		t.Fatalf("doubling alloc %d -> %d input %d -> %d", n1, n2, len(small), len(large))
+	}
+	t.Logf("doubling input %d -> %d alloc %d -> %d growth %.2f", len(small), len(large), n1, n2, float64(n2)/float64(n1))
+}
+
+func measureOneAlloc(t *testing.T, raw []byte, spec Spec, limit func(int) uint64) uint64 {
+	t.Helper()
+	if err := Check(raw, spec); err != nil {
+		t.Fatal(err)
+	}
+	n := allocatedBytes(func() { _ = Check(raw, spec) })
+	lim := limit(len(raw))
+	t.Logf("allocated %d limit %d input %d ratio %.2f", n, lim, len(raw), float64(n)/float64(len(raw)))
+	if n > lim {
+		t.Fatalf("allocated %d bytes, limit %d, input %d", n, lim, len(raw))
+	}
+	return n
 }
 
 func starPattern(depth int) string {
@@ -944,6 +1213,62 @@ func deepObjectLongKeys(depth, keyLen int) []byte {
 		b = append(b, '}')
 	}
 	return b
+}
+
+func wideZeroObject(target int) ([]byte, int) {
+	b := make([]byte, 0, target+16)
+	b = append(b, '{')
+	keys := 0
+	for {
+		if keys > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '"', 'k')
+		var buf [7]byte
+		n := keys
+		for d := 6; d >= 0; d-- {
+			buf[d] = byte('0' + n%10)
+			n /= 10
+		}
+		b = append(b, buf[:]...)
+		b = append(b, '"', ':', '0')
+		keys++
+		if len(b) >= target-1 {
+			break
+		}
+	}
+	b = append(b, '}')
+	return b, keys
+}
+
+func wideTypedSpec(keys int) Spec {
+	set := make(map[string]bool, keys)
+	for i := 0; i < keys; i++ {
+		set[fmt.Sprintf("k%07d", i)] = true
+	}
+	return Spec{Typed: map[string]KeySet{"": {Keys: set}}}
+}
+
+func twoKeyObjectArray(target int) ([]byte, int) {
+	const elem = `{"a":0,"b":0}`
+	if target < len(elem)+2 {
+		return []byte(`[` + elem + `]`), 1
+	}
+	// n objects: '[' + elem + (',' + elem) * (n-1) + ']'.
+	n := (target - 1) / (len(elem) + 1)
+	if n < 1 {
+		n = 1
+	}
+	b := make([]byte, 0, n*(len(elem)+1)+2)
+	b = append(b, '[')
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, elem...)
+	}
+	b = append(b, ']')
+	return b, n
 }
 
 func flatZeroArray(n int) []byte {

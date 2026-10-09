@@ -1,6 +1,13 @@
 // Package kittest holds the conformance suites consumers run against
 // their own wiring. The suites take injected drivers. This package does
 // not import an MCP SDK.
+//
+// DuplicateKeyNoEffect is for a consumer's C4 commit. PR-1 lists the
+// Open validators that commit will register; C4 registers them and runs
+// this helper (plan section 6.0 step 5). It feeds mcpstrict a document
+// that repeats a root key and checks that the caller's snapshot is
+// unchanged after Check rejects it, and that Check did not modify the
+// caller's document or the duplicate document.
 package kittest
 
 import (
@@ -57,10 +64,26 @@ type ResetFailureDriver interface {
 type ZeroTokenShape string
 
 const (
-	ZeroNTPBearer       ZeroTokenShape = "ntp-bearer"
-	ZeroNTPLoopback     ZeroTokenShape = "ntp-loopback"
-	ZeroNetconf         ZeroTokenShape = "netconf"
-	ZeroSNMP            ZeroTokenShape = "snmp"
+	ZeroNTPBearer   ZeroTokenShape = "ntp-bearer"
+	ZeroNTPLoopback ZeroTokenShape = "ntp-loopback"
+	// ZeroNetconf is netconf from its C3a commit. A zero-token bearer
+	// reset through a control adapter is refused before the swap. The
+	// old bearer and cookie still work and the revision is unchanged.
+	ZeroNetconf ZeroTokenShape = "netconf"
+	// ZeroNetconfFailClosed is netconf PR-1, today's behavior. The reset
+	// succeeds. The adapter's post-swap reload calls failClosedAuth, which
+	// installs an empty verifier and clears sessions, so the old bearer
+	// and cookie stop working and the revision changes.
+	ZeroNetconfFailClosed ZeroTokenShape = "netconf-fail-closed"
+	// ZeroSNMP is snmp PR-1, today's success that drops old bearers. A
+	// zero-token bearer reset succeeds, the old bearer and cookie stop
+	// working, and the revision changes.
+	ZeroSNMP ZeroTokenShape = "snmp"
+	// ZeroSNMPRefuse is snmp from its B PR-2 C3a commit (P9, decided by
+	// Matt 2026-10-08). A zero-token bearer reset through a control
+	// adapter is refused before the swap. The old bearer and cookie
+	// still work and the revision is unchanged.
+	ZeroSNMPRefuse      ZeroTokenShape = "snmp-refuse"
 	ZeroMaildevBearer   ZeroTokenShape = "maildev-bearer"
 	ZeroMaildevBasic    ZeroTokenShape = "maildev-basic"
 	ZeroMaildevLoopback ZeroTokenShape = "maildev-loopback"
