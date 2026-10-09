@@ -1,6 +1,10 @@
 // Package kittest holds the conformance suites consumers run against
 // their own wiring. The suites take injected drivers. This package does
 // not import an MCP SDK.
+//
+// DuplicateKeyNoEffect is for a consumer's PR-1. It feeds mcpstrict a
+// document that repeats a root key and checks that the caller's snapshot
+// is unchanged after Check rejects it.
 package kittest
 
 import (

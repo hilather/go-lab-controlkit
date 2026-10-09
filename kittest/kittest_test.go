@@ -1507,6 +1507,37 @@ func (d *strictRef) Call(_ context.Context, _ string, args json.RawMessage) (str
 	return "ok", d.rev
 }
 
+func TestDuplicateKeyNoEffect(t *testing.T) {
+	doc := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
+	calls := 0
+	pure := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(json.RawMessage) error {
+			calls++
+			return nil
+		},
+	}}
+	DuplicateKeyNoEffect(t, pure, doc, func() string { return "quiet" })
+	// The good document and the later duplicate both reach /view.
+	// The root validator would not run on the duplicate.
+	if calls != 2 {
+		t.Fatalf("validator calls %d", calls)
+	}
+
+	n := 0
+	seeded := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(json.RawMessage) error {
+			n++
+			return nil
+		},
+	}}
+	fake := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, seeded, doc, func() string { return fmt.Sprintf("%d", n) })
+	})
+	if !fake.failed || len(fake.msgs) != 1 || !strings.Contains(fake.msgs[0], "snapshot changed") {
+		t.Fatalf("seeded: failed=%v msgs=%v", fake.failed, fake.msgs)
+	}
+}
+
 func tdir(t *testing.T) string {
 	if t == nil {
 		dir, err := os.MkdirTemp("", "kittest")

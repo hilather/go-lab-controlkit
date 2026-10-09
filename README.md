@@ -29,7 +29,7 @@ tag.
 - `idem`: bounded LRU and FIFO idempotency cache.
 - `ratelimit`: capped per-key buckets and a per-call global bucket.
 - `mcpstrict`: duplicate JSON keys, typed subtrees, and open fields.
-- `kittest`: conformance suites that take injected drivers.
+- `kittest`: conformance suites that take injected drivers. `DuplicateKeyNoEffect` checks that a later duplicate key leaves no observable validator effect.
 
 ## Rules
 

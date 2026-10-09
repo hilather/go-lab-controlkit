@@ -27,6 +27,9 @@ commit log.
 
 ### Added
 
+- `kittest.DuplicateKeyNoEffect` appends a later copy of the first root key,
+  requires the duplicate-key error, and requires the caller's snapshot to
+  stay unchanged.
 - Repository setup: Apache-2.0 license, README with the consumer pin matrix
   and option ledger, SECURITY.md, CODEOWNERS, and CI (`go vet`,
   `go test -race ./...`, fuzz smoke, `govulncheck`, and a `replace`/`go.work`
