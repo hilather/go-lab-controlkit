@@ -1546,7 +1546,7 @@ func TestDuplicateKeyNoEffect(t *testing.T) {
 		},
 	}}
 	DuplicateKeyNoEffect(t, pure, doc, func() string { return "quiet" })
-	// The good document and the later duplicate both reach /view.
+	// The later duplicate and then the good document both reach /view.
 	// The root validator would not run on the duplicate.
 	if calls != 2 {
 		t.Fatalf("validator calls %d", calls)
@@ -1569,14 +1569,13 @@ func TestDuplicateKeyNoEffect(t *testing.T) {
 
 func TestDuplicateKeyNoEffectRejectsInputWrite(t *testing.T) {
 	doc := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
-	// Check runs on the good document first. Write only on the later
-	// call, which is the duplicate document's nested value. That
-	// RawMessage aliases the duplicate buffer.
+	// Check runs on the duplicate document first. Write only on that
+	// call. The nested RawMessage aliases the duplicate buffer.
 	calls := 0
 	mut := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
 		"/view": func(m json.RawMessage) error {
 			calls++
-			if calls >= 2 && len(m) > 0 {
+			if calls == 1 && len(m) > 0 {
 				m[0] = 'X'
 			}
 			return nil
@@ -1589,9 +1588,9 @@ func TestDuplicateKeyNoEffectRejectsInputWrite(t *testing.T) {
 		t.Fatalf("write: failed=%v msgs=%v", fake.failed, fake.msgs)
 	}
 
-	// The same byte on every call mutates doc during the first Check.
-	// The duplicate is built from that buffer, so the later write is a
-	// no-op and only the caller's bytes show it. {"n":1} becomes {"n":9}.
+	// The same byte on every call. The duplicate is built from the
+	// caller's bytes before any Check, so the write shows in the
+	// duplicate: {"n":1,"n":0} becomes {"n":9,"n":0}.
 	fixed := json.RawMessage(`{"n":1}`)
 	every := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
 		"/n": func(m json.RawMessage) error {
@@ -1604,9 +1603,81 @@ func TestDuplicateKeyNoEffectRejectsInputWrite(t *testing.T) {
 	wrote := runFake(func(tb Testing) {
 		DuplicateKeyNoEffect(tb, every, fixed, func() string { return "quiet" })
 	})
-	if !wrote.failed || len(wrote.msgs) != 1 || wrote.msgs[0] != "document bytes changed" {
+	if !wrote.failed || len(wrote.msgs) != 1 || wrote.msgs[0] != "duplicate document bytes changed" {
 		t.Fatalf("every write: failed=%v msgs=%v", wrote.failed, wrote.msgs)
 	}
+
+	// A write only on the good document's call shows in the caller's
+	// bytes.
+	calls = 0
+	late := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(m json.RawMessage) error {
+			calls++
+			if calls == 2 && len(m) > 0 {
+				m[0] = 'X'
+			}
+			return nil
+		},
+	}}
+	own := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
+	lateFake := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, late, own, func() string { return "quiet" })
+	})
+	if !lateFake.failed || len(lateFake.msgs) != 1 || lateFake.msgs[0] != "document bytes changed" {
+		t.Fatalf("late write: failed=%v msgs=%v", lateFake.failed, lateFake.msgs)
+	}
+}
+
+// An idempotent side effect, such as a flag set on every call, is the
+// same after a second call. The snapshot is taken before any Check, so
+// the duplicate document's call is the one that flips it and the helper
+// fails. Taking the snapshot after Check on the good document would see
+// "seen" both times and pass.
+func TestDuplicateKeyNoEffectCatchesIdempotentSideEffect(t *testing.T) {
+	doc := json.RawMessage(`{"view":{"mode":"rate"},"n":1}`)
+	seen := false
+	flag := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(json.RawMessage) error {
+			seen = true
+			return nil
+		},
+	}}
+	state := func() string {
+		if seen {
+			return "seen"
+		}
+		return "unseen"
+	}
+	fake := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, flag, doc, state)
+	})
+	if !fake.failed || len(fake.msgs) != 1 || fake.msgs[0] != `snapshot changed from "unseen" to "seen"` {
+		t.Fatalf("idempotent: failed=%v msgs=%v", fake.failed, fake.msgs)
+	}
+
+	// Old ordering, spelled out: Check the good document, then snapshot,
+	// then Check the duplicate. The flag is already set, so the
+	// snapshot does not move.
+	seen = false
+	if err := mcpstrict.Check(doc, flag); err != nil {
+		t.Fatal(err)
+	}
+	was := state()
+	dup, err := withLaterDuplicateKey(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mcpstrict.Check(dup, flag); !isDuplicateKey(err) {
+		t.Fatalf("dup err=%v", err)
+	}
+	if state() != was {
+		t.Fatalf("old ordering saw %q then %q", was, state())
+	}
+
+	// A validator with no side effect still passes.
+	DuplicateKeyNoEffect(t, mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/view": func(json.RawMessage) error { return nil },
+	}}, doc, state)
 }
 
 func tdir(t *testing.T) string {

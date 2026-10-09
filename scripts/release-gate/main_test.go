@@ -386,7 +386,7 @@ func TestRejectTagDoesNotRunGit(t *testing.T) {
 	t.Setenv("GITHUB_REF", "refs/tags/v1.2.3;rm")
 	t.Setenv("GITHUB_REF_NAME", "v1.2.3;rm")
 	t.Setenv("GITHUB_REPOSITORY", "")
-	_, _, err := requireGreenCI()
+	_, _, err := requireGreenCI("", "")
 	if err == nil || strings.Contains(err.Error(), "called") || retryable(err) {
 		t.Fatalf("err=%v", err)
 	}
@@ -447,6 +447,18 @@ func TestRunInterpolationDetector(t *testing.T) {
 func TestWorkflowContract(t *testing.T) {
 	ci := readWorkflow(t, "ci.yml")
 	rel := readWorkflow(t, "release.yml")
+	// GitHub ignores step env that sets GITHUB_*; the re-gate must pass the
+	// tag and peeled commit explicitly.
+	for _, bad := range []string{"GITHUB_SHA:", "GITHUB_REF:", "GITHUB_REF_NAME:"} {
+		if strings.Contains(rel, bad) {
+			t.Errorf("release.yml sets %s in env; GitHub ignores it", strings.TrimSuffix(bad, ":"))
+		}
+	}
+	if !strings.Contains(rel, `"$RUNNER_TEMP/release-gate" -require-ci -tag "$RELEASE_TAG" -sha "$RELEASE_SHA"`) ||
+		!strings.Contains(rel, "RELEASE_TAG: ${{ steps.rev.outputs.ref }}") ||
+		!strings.Contains(rel, "RELEASE_SHA: ${{ steps.rev.outputs.sha }}") {
+		t.Error("release.yml must pass -tag and -sha from steps.rev to release-gate -require-ci")
+	}
 	if !strings.Contains(ci, "github.event.pull_request.number || github.ref") {
 		t.Fatal("ci concurrency must use github.ref so a tag and a branch do not share a group")
 	}
