@@ -3,6 +3,12 @@
 // hand-replaced typed subtree, and open fields the repo validates itself.
 // Check runs only after the SDK has accepted the call. Nil, empty, and
 // "{}" arguments are accepted. A non-JSON body never reaches Check.
+//
+// Check allocates linearly in the input size. No shape grows faster than
+// linearly. Deep and flat documents that are not wide objects stay within
+// about 8× the input plus 256 KiB. A wide object is about 20×, from the
+// duplicate-key map and the decoded key strings. Spec.Typed adds one
+// encoding/json decode. See Check.
 package mcpstrict
 
 import (
@@ -28,6 +34,8 @@ type KeySet struct {
 // Typed maps a path to the allowed keys of that object.
 // A path segment "*" matches any one key or index.
 // The zero Open map and the zero Typed map check nothing.
+// A non-empty Typed map decodes the whole document once with
+// encoding/json. That decode is linear in the input. See Check.
 //
 // A nested Open validator runs when its value ends. That can be before
 // Check has found a duplicate key later in the document and before the
@@ -62,6 +70,17 @@ type Spec struct {
 // materialized only for a kept Open failure or an error. A typed spec
 // decodes the input once with encoding/json; that decode is not repeated
 // per node.
+//
+// Allocation is linear in the input size. No shape grows faster than
+// linearly. Deep and flat inputs that are not wide objects stay within
+// about 8× the input plus 256 KiB. A wide object is about 20×, from the
+// duplicate-key map and one decoded string per key. When Typed is
+// non-empty, the encoding/json decode into any is about 43× for a flat
+// array of numbers and about 31× for a wide object, the same decode the
+// MCP SDK pays. A Typed "*" walk over every element of a flat array
+// measured about 71× under the race detector, from per-element pattern
+// slices on top of that decode, and is still linear. Measured 2026-10-08
+// on Go 1.26.8.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil

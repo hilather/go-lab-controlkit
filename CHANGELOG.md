@@ -5,6 +5,20 @@ commit log.
 
 ## Unreleased
 
+### Changed
+
+- `mcpstrict`: Check's allocation is linear in the input. No shape grows
+  faster than linearly. The 8× + 256 KiB bound is only deep and flat inputs
+  that are not wide objects (measured at most about 3.5×). A wide object is
+  about 20×, from the duplicate-key map and the decoded key strings.
+  `Spec.Typed` decodes the input once with `encoding/json`, about 43× for a
+  flat array of numbers and about 31× for a wide object, the same decode the
+  MCP SDK pays. A Typed `*` walk over every array element measured about 71×
+  under the race detector and is still linear. `TestCheckAllocBound` pins the
+  wide object at 28× + 256 KiB and the Typed decode at 60× + 256 KiB, and
+  fails if doubling the input multiplies allocations by more than 2.6×.
+  Measured 2026-10-08 on Go 1.26.8.
+
 ### Added
 
 - Repository setup: Apache-2.0 license, README with the consumer pin matrix

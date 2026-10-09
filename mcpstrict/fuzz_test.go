@@ -46,15 +46,17 @@ func FuzzCheck(f *testing.F) {
 		if got != dup {
 			t.Fatalf("duplicate check=%v oracle=%v raw=%q", err, dup, raw)
 		}
-		// Byte bound for the no-spec call. testing.AllocsPerRun pins
-		// GOMAXPROCS to 1 and samples around a warm-up so a process-wide
-		// TotalAlloc delta is not mixed with other fuzz workers. A raw
-		// ReadMemStats inside the fuzz function is noisy under -race and
-		// when workers run together, so tiny inputs are skipped: fixed
-		// overhead dominates k*len there, and the amplification shows up
-		// on larger bodies. 32× plus 1 MiB still fails the old depth copy
-		// (hundreds of times the input) and leaves room for the duplicate
-		// key map on a wide object.
+		// Byte bound for the no-spec call only. Spec.Typed is not covered:
+		// a flat array with Typed measured about 43× on 2026-10-08, and
+		// this 32× limit would reject that decode. testing.AllocsPerRun
+		// pins GOMAXPROCS to 1 and samples around a warm-up so a
+		// process-wide TotalAlloc delta is not mixed with other fuzz
+		// workers. A raw ReadMemStats inside the fuzz function is noisy
+		// under -race and when workers run together, so tiny inputs are
+		// skipped: fixed overhead dominates k*len there. A wide object
+		// with Spec{} measured about 20× (duplicate-key map and key
+		// strings) and stayed linear. 32× plus 1 MiB covers that shape,
+		// and still fails the old depth copy (hundreds of times the input).
 		if len(raw) >= fuzzAllocMin {
 			avg := bytesPerRun(1, func() { _ = Check(raw, Spec{}) })
 			limit := float64(fuzzAllocMul*len(raw) + fuzzAllocSlack)
@@ -66,7 +68,9 @@ func FuzzCheck(f *testing.F) {
 }
 
 // fuzzAllocMin skips the bound on tiny inputs. fuzzAllocMul and
-// fuzzAllocSlack bound TotalAlloc for one Spec{} Check.
+// fuzzAllocSlack bound TotalAlloc for one Spec{} Check. They do not
+// bound a non-empty Spec.Typed. A wide Spec{} object is about 20× and
+// stays under 32×.
 const (
 	fuzzAllocMin   = 2048
 	fuzzAllocMul   = 32
