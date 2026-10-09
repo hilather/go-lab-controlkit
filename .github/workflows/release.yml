@@ -13,7 +13,7 @@
 # Any other non-zero status is a hard failure. Stderr for a retryable
 # status starts with "release-gate: pending" or
 # "release-gate: no matching run". A pre-release tag that contains those
-# words, such as v0.1.0-pending, does not make a peel or GITHUB_SHA error
+# words, such as v0.1.0-pending, does not make a peel or -sha error
 # retryable. A completed run must have these jobs with conclusion success,
 # by exact name:
 #   go vet
@@ -27,7 +27,9 @@
 # ends, strip one refs/tags/ prefix, and require that pattern. It does
 # not check out the ref. actions/checkout then receives only
 # refs/tags/<canonical tag>. A later step peels that tag and requires
-# HEAD to be the peeled commit.
+# HEAD to be the peeled commit. release-gate -require-ci gets that tag and
+# commit as -tag and -sha: GitHub ignores a step env override of GITHUB_SHA,
+# GITHUB_REF and GITHUB_REF_NAME, which on workflow_dispatch name the branch.
 # docs/releases/<tag>.md must exist and contain a Markdown heading that
 # includes the tag. A heading inside a fenced code block does not count.
 # CHANGELOG.md must contain a line "## <tag>".
@@ -154,15 +156,17 @@ jobs:
       - name: Require green CI on this tag push
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_SHA: ${{ steps.rev.outputs.sha }}
-          GITHUB_REF: refs/tags/${{ steps.rev.outputs.ref }}
-          GITHUB_REF_NAME: ${{ steps.rev.outputs.ref }}
+          # GitHub ignores step env that sets GITHUB_SHA, GITHUB_REF or
+          # GITHUB_REF_NAME. On workflow_dispatch those name the branch, so
+          # the tag and its peeled commit go in as -tag and -sha.
+          RELEASE_TAG: ${{ steps.rev.outputs.ref }}
+          RELEASE_SHA: ${{ steps.rev.outputs.sha }}
         run: |
           set -euo pipefail
           for i in $(seq 1 70); do
             echo "release-gate: CI attempt ${i}/70" >&2
             set +e
-            "$RUNNER_TEMP/release-gate" -require-ci
+            "$RUNNER_TEMP/release-gate" -require-ci -tag "$RELEASE_TAG" -sha "$RELEASE_SHA"
             status=$?
             set -e
             if [ "$status" -eq 0 ]; then

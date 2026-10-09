@@ -229,7 +229,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 	t.Run("accepts peeled tag push", func(t *testing.T) {
 		args := installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewGreen())
 		setTagEnv(t, repo.tag, repo.commit)
-		id, sha, err := requireGreenCI()
+		id, sha, err := requireGreenCI("", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 	t.Run("tag object sha is not the CI head", func(t *testing.T) {
 		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.tagObj), viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.commit)
-		_, _, err := requireGreenCI()
+		_, _, err := requireGreenCI("", "")
 		if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), noMatchPrefix+" ") {
 			t.Fatalf("err=%v", err)
 		}
@@ -257,7 +257,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 	t.Run("github sha must be the peeled commit", func(t *testing.T) {
 		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.tagObj)
-		_, _, err := requireGreenCI()
+		_, _, err := requireGreenCI("", "")
 		if err == nil || !strings.Contains(err.Error(), "not the peeled commit") || retryable(err) {
 			t.Fatalf("err=%v", err)
 		}
@@ -268,7 +268,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 			oneRunObj(22, "completed", "failure", "push", repo.tag, repo.commit) + "]"
 		installFakeGH(t, list, viewOnly(22, jobsJSON(map[string]string{"go vet": "failure"})))
 		setTagEnv(t, repo.tag, repo.commit)
-		_, _, err := requireGreenCI()
+		_, _, err := requireGreenCI("", "")
 		if err == nil || retryable(err) || !strings.Contains(err.Error(), "not green") {
 			t.Fatalf("err=%v", err)
 		}
@@ -279,7 +279,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 			oneRunObj(30, "completed", "success", "push", repo.tag, repo.commit) + "]"
 		installFakeGH(t, list, viewOnly(30, jobsJSON(nil)))
 		setTagEnv(t, repo.tag, repo.commit)
-		id, _, err := requireGreenCI()
+		id, _, err := requireGreenCI("", "")
 		if err != nil || id != 30 {
 			t.Fatalf("id %d err %v", id, err)
 		}
@@ -290,7 +290,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 			oneRunObj(30, "in_progress", "", "push", repo.tag, repo.commit) + "]"
 		installFakeGH(t, list, viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.commit)
-		_, _, err := requireGreenCI()
+		_, _, err := requireGreenCI("", "")
 		if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), pendingPrefix+" ") || strings.HasPrefix(err.Error(), noMatchPrefix) {
 			t.Fatalf("err=%v", err)
 		}
@@ -299,7 +299,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 	t.Run("pull request event", func(t *testing.T) {
 		installFakeGH(t, oneRun(11, "completed", "success", "pull_request", repo.tag, repo.commit), viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.commit)
-		_, _, err := requireGreenCI()
+		_, _, err := requireGreenCI("", "")
 		if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), noMatchPrefix+" ") {
 			t.Fatalf("err=%v", err)
 		}
@@ -308,7 +308,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 	t.Run("skipped job is not retried", func(t *testing.T) {
 		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewConclusion(t, "fuzz smoke", "skipped"))
 		setTagEnv(t, repo.tag, repo.commit)
-		_, _, err := requireGreenCI()
+		_, _, err := requireGreenCI("", "")
 		if err == nil || !strings.Contains(err.Error(), "fuzz smoke=skipped") || retryable(err) {
 			t.Fatalf("err=%v", err)
 		}
@@ -550,4 +550,97 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// On workflow_dispatch GitHub keeps GITHUB_REF, GITHUB_REF_NAME and
+// GITHUB_SHA on the dispatching branch even when a step's env sets them, so
+// the workflow passes the tag and peeled commit as -tag and -sha.
+func TestRequireCIExplicitTagAndSHA(t *testing.T) {
+	repo := annotatedRepo(t)
+	t.Chdir(repo.dir)
+	const mainSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	dispatchEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("GITHUB_REF", "refs/heads/main")
+		t.Setenv("GITHUB_REF_NAME", "main")
+		t.Setenv("GITHUB_SHA", mainSHA)
+		t.Setenv("GITHUB_REPOSITORY", "")
+	}
+
+	t.Run("dispatch env without flags fails closed", func(t *testing.T) {
+		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewShouldNotRun(t))
+		dispatchEnv(t)
+		_, _, err := requireGreenCI("", "")
+		if err == nil || retryable(err) {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
+	t.Run("flags override dispatch env", func(t *testing.T) {
+		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewGreen())
+		dispatchEnv(t)
+		var out, errb bytes.Buffer
+		code := run([]string{"-require-ci", "-tag", repo.tag, "-sha", repo.commit}, &out, &errb)
+		if code != 0 || !strings.Contains(out.String(), "CI run 30 green at "+repo.commit) {
+			t.Fatalf("code %d out %q err %q", code, out.String(), errb.String())
+		}
+	})
+
+	t.Run("refs/tags form of -tag", func(t *testing.T) {
+		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewGreen())
+		dispatchEnv(t)
+		id, sha, err := requireGreenCI("refs/tags/"+repo.tag, repo.commit)
+		if err != nil || id != 30 || sha != repo.commit {
+			t.Fatalf("id %d sha %s err %v", id, sha, err)
+		}
+	})
+
+	t.Run("-tag alone ignores GITHUB_SHA", func(t *testing.T) {
+		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewGreen())
+		dispatchEnv(t)
+		if _, _, err := requireGreenCI(repo.tag, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("-sha must be the peeled commit", func(t *testing.T) {
+		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewShouldNotRun(t))
+		dispatchEnv(t)
+		for _, sha := range []string{repo.tagObj, mainSHA} {
+			_, _, err := requireGreenCI(repo.tag, sha)
+			if err == nil || retryable(err) || !strings.Contains(err.Error(), "-sha "+sha+" is not the peeled commit") {
+				t.Fatalf("%s err=%v", sha, err)
+			}
+		}
+	})
+
+	t.Run("-sha must look like a commit", func(t *testing.T) {
+		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.commit), viewShouldNotRun(t))
+		dispatchEnv(t)
+		for _, sha := range []string{"abc", "-h", strings.ToUpper(repo.commit), repo.commit + ";rm"} {
+			_, _, err := requireGreenCI(repo.tag, sha)
+			if err == nil || retryable(err) || !strings.Contains(err.Error(), "is not a commit sha") {
+				t.Fatalf("%q err=%v", sha, err)
+			}
+		}
+	})
+
+	t.Run("bad -tag is rejected before git", func(t *testing.T) {
+		dispatchEnv(t)
+		var out, errb bytes.Buffer
+		code := run([]string{"-require-ci", "-tag", "v1.2.3;rm", "-sha", repo.commit}, &out, &errb)
+		if code != 1 || retryableText(errb.String()) {
+			t.Fatalf("code %d %s", code, errb.String())
+		}
+	})
+
+	t.Run("usage", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := run([]string{"-require-ci", "-notes", "x.md"}, &out, &errb); code != 2 {
+			t.Fatalf("-require-ci -notes code %d", code)
+		}
+		if code := run([]string{"-notes-only", "-tag", repo.tag, "-sha", repo.commit}, &out, &errb); code != 2 {
+			t.Fatalf("-notes-only -sha code %d", code)
+		}
+	})
 }

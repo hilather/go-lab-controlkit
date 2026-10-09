@@ -5,7 +5,18 @@ commit log.
 
 ## Unreleased
 
-Nothing yet.
+### Changed
+
+- `kittest.DuplicateKeyNoEffect` is stricter. It takes the snapshot and
+  checks the duplicate document before the good one, so a validator with an
+  idempotent side effect (a flag, a gauge, a last-value field, or the same
+  byte written on every call) that passed under v0.1.0 now fails.
+- The release gate takes `-tag` and `-sha`. `release.yml` passes the tag and
+  its peeled commit explicitly instead of overriding `GITHUB_SHA`,
+  `GITHUB_REF` and `GITHUB_REF_NAME` in step env, which GitHub ignores, so a
+  manual `workflow_dispatch` re-run started from a branch now works.
+- Together these close two of the known gaps listed in
+  [v0.1.0's release notes](docs/releases/v0.1.0.md#known-gaps-and-follow-ups).
 
 ## v0.1.0
 

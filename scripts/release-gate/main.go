@@ -11,7 +11,11 @@
 // CHANGELOG.md must contain a line "## <tag>". A file whose only release
 // heading is "## Unreleased" fails.
 //
-// -require-ci checks the CI run of this tag push. It peels the tag with
+// -require-ci checks the CI run of this tag push. The release workflow
+// passes the tag and its peeled commit as -tag and -sha. GitHub ignores a
+// step's env override of GITHUB_SHA, GITHUB_REF and GITHUB_REF_NAME, and on
+// workflow_dispatch those name the dispatching branch, so they are read only
+// when -tag and -sha are both absent. It peels the tag with
 // git rev-parse refs/tags/<tag>^{commit} (an annotated tag's object is not
 // the commit) and asks gh for runs of ci.yml on that SHA. The run that
 // counts has event push, headSha equal to the peeled commit, and
@@ -20,7 +24,7 @@
 // that status starts with "release-gate: no matching run" or
 // "release-gate: pending". Any other error exits 1. The workflow retries
 // only exit 75, so a pre-release tag such as v0.1.0-pending does not make
-// a peel or GITHUB_SHA error retryable. The required job names are the CI
+// a peel or -sha error retryable. The required job names are the CI
 // job names, matched exactly, and each conclusion must be success.
 //
 // -module checks that go list -m reports this module. It does not fetch
@@ -98,6 +102,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	notesOnly := fs.Bool("notes-only", false, "validate release notes and the changelog heading")
 	notes := fs.String("notes", "", "path to docs/releases/<tag>.md")
 	tagFlag := fs.String("tag", "", "release tag, vX.Y.Z or refs/tags/vX.Y.Z")
+	shaFlag := fs.String("sha", "", "with -require-ci: the tag's peeled commit; replaces GITHUB_SHA")
 	changelog := fs.String("changelog", "CHANGELOG.md", "path to CHANGELOG.md")
 	requireCI := fs.Bool("require-ci", false, "require a green CI run of this tag push")
 	module := fs.Bool("module", false, "require go list -m to report this module")
@@ -122,8 +127,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "usage: release-gate -notes-only -notes PATH -tag TAG | -require-ci | -module\n")
 		return 2
 	}
-	if *requireCI && (*tagFlag != "" || *notes != "") {
-		fmt.Fprintf(stderr, "release-gate: -require-ci reads the tag from GITHUB_REF and GITHUB_REF_NAME\n")
+	if *requireCI && *notes != "" {
+		fmt.Fprintf(stderr, "release-gate: -require-ci does not take -notes\n")
+		return 2
+	}
+	if !*requireCI && *shaFlag != "" {
+		fmt.Fprintf(stderr, "release-gate: -sha is only for -require-ci\n")
 		return 2
 	}
 	switch {
@@ -148,7 +157,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "release-gate: notes ok for %s\n", tag)
 		return 0
 	case *requireCI:
-		id, sha, err := requireGreenCI()
+		id, sha, err := requireGreenCI(*tagFlag, *shaFlag)
 		if err != nil {
 			return fail(stderr, err)
 		}
@@ -483,17 +492,40 @@ func judgeJobs(jobs []ciJob) error {
 	return nil
 }
 
-func requireGreenCI() (int64, string, error) {
-	tag, err := resolveReleaseTag()
+// requireGreenCI finds the tag push's CI run and requires its jobs green.
+//
+// tagArg and shaArg come from -tag and -sha. The release workflow passes
+// both. GitHub ignores a step-level env override of GITHUB_SHA, GITHUB_REF
+// and GITHUB_REF_NAME, so on workflow_dispatch those still name the
+// dispatching branch and its head, not the tag being re-gated. When tagArg
+// is set, GITHUB_REF and GITHUB_REF_NAME are not read; when tagArg or
+// shaArg is set, GITHUB_SHA is not read. With neither, the tag comes from
+// GITHUB_REF/GITHUB_REF_NAME and a non-empty GITHUB_SHA must be the peeled
+// commit, which holds on a tag push.
+func requireGreenCI(tagArg, shaArg string) (int64, string, error) {
+	var tag string
+	var err error
+	if strings.TrimSpace(tagArg) != "" {
+		tag, err = canonicalTag(tagArg)
+	} else {
+		tag, err = resolveReleaseTag()
+	}
 	if err != nil {
 		return 0, "", err
+	}
+	wantSHA, wantName := strings.TrimSpace(os.Getenv("GITHUB_SHA")), "GITHUB_SHA"
+	if strings.TrimSpace(tagArg) != "" || strings.TrimSpace(shaArg) != "" {
+		wantSHA, wantName = strings.TrimSpace(shaArg), "-sha"
+		if wantSHA != "" && !validCommitSHA(wantSHA) {
+			return 0, "", fmt.Errorf("-sha %q is not a commit sha", wantSHA)
+		}
 	}
 	sha, err := peelCommit(".", tag)
 	if err != nil {
 		return 0, "", err
 	}
-	if given := strings.TrimSpace(os.Getenv("GITHUB_SHA")); given != "" && given != sha {
-		return 0, "", fmt.Errorf("GITHUB_SHA %s is not the peeled commit %s of tag %s", given, sha, tag)
+	if wantSHA != "" && wantSHA != sha {
+		return 0, "", fmt.Errorf("%s %s is not the peeled commit %s of tag %s", wantName, wantSHA, sha, tag)
 	}
 	runs, err := listRuns(sha)
 	if err != nil {

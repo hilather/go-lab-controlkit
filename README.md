@@ -130,7 +130,12 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
   a GitHub Release. `workflow_dispatch` re-runs the gate for one tag and
   publishes nothing. Before checkout, the workflow trims that ref, strips one
   `refs/tags/` prefix, and requires the pattern above. Checkout receives only
-  `refs/tags/<tag>`. A ref that fails the pattern is not checked out.
+  `refs/tags/<tag>`. A ref that fails the pattern is not checked out. The
+  workflow passes the tag and its peeled commit to `release-gate
+  -require-ci` as `-tag` and `-sha`. GitHub ignores a step's env override
+  of `GITHUB_SHA`, `GITHUB_REF` and `GITHUB_REF_NAME`, and on
+  `workflow_dispatch` those name the dispatching branch, not the tag.
+  `-tag` without `-sha` skips the SHA cross-check.
 - The gate matches the CI run of that tag push: workflow `ci.yml`, event
   `push`, `headSha` equal to the peeled commit
   (`git rev-parse refs/tags/<tag>^{commit}`), and `headBranch` equal to the
@@ -138,7 +143,7 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
   is missing or not completed, release-gate exits 75 and the workflow
   retries. Any other non-zero status stops the retry. A pre-release whose
   name contains "pending", such as `v0.1.0-pending`, does not turn a peel or
-  `GITHUB_SHA` error into a retry. The newest matching run (highest
+  `-sha` error into a retry. The newest matching run (highest
   `databaseId`) must have these jobs green, by exact name: `go vet`,
   `go test -race ./...`, `fuzz smoke`, `govulncheck`, `replace/go.work check`.
   A green run on `main` for the same commit does not count.
