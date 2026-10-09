@@ -7,6 +7,7 @@
 // -notes-only checks the tagged tree. The tag must match
 // vMAJOR.MINOR.PATCH with an optional pre-release. docs/releases/<tag>.md
 // must exist and contain a Markdown heading that includes the tag.
+// A heading inside a fenced code block does not count.
 // CHANGELOG.md must contain a line "## <tag>". A file whose only release
 // heading is "## Unreleased" fails.
 //
@@ -15,10 +16,12 @@
 // the commit) and asks gh for runs of ci.yml on that SHA. The run that
 // counts has event push, headSha equal to the peeled commit, and
 // headBranch equal to the tag name. Only the newest match (highest
-// databaseId) is judged. While that run is missing or not completed, the
-// error contains "no matching run" or "pending" so the workflow can retry.
-// Any other error stops the retry. The required job names are the CI job
-// names, matched exactly, and each conclusion must be success.
+// databaseId) is judged. A missing or unfinished run exits 75. Stderr for
+// that status starts with "release-gate: no matching run" or
+// "release-gate: pending". Any other error exits 1. The workflow retries
+// only exit 75, so a pre-release tag such as v0.1.0-pending does not make
+// a peel or GITHUB_SHA error retryable. The required job names are the CI
+// job names, matched exactly, and each conclusion must be success.
 //
 // -module checks that go list -m reports this module. It does not fetch
 // the module or write a release.
@@ -59,7 +62,31 @@ var requiredCIJobs = []string{
 const (
 	modulePath = "github.com/hilather/go-lab-controlkit"
 	ciWorkflow = "ci.yml"
+
+	// exitRetryable is sysexits.h EX_TEMPFAIL. The release workflow retries
+	// only this status. Every other non-zero status is a hard failure.
+	exitRetryable = 75
+
+	// pendingPrefix and noMatchPrefix are the start of a retryable error.
+	// fail prepends "release-gate: ", so the log line starts with
+	// "release-gate: pending" or "release-gate: no matching run".
+	pendingPrefix = "pending"
+	noMatchPrefix = "no matching run"
 )
+
+// retryableError is a missing or unfinished CI run. Other errors are not
+// retryable, even when the tag is a pre-release such as v0.1.0-pending
+// and the error text contains that word.
+type retryableError struct {
+	msg string
+}
+
+func (e *retryableError) Error() string { return e.msg }
+
+func retryable(err error) bool {
+	var target *retryableError
+	return errors.As(err, &target)
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -136,8 +163,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+// fail prints err. A missing or unfinished CI run returns exitRetryable.
+// Every other error returns 1, including one whose text names a tag such
+// as v0.1.0-pending.
 func fail(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "release-gate: %v\n", err)
+	if retryable(err) {
+		return exitRetryable
+	}
 	return 1
 }
 
@@ -231,9 +264,22 @@ func validateRelease(tag, notes, changelog string) error {
 
 // notesMentionTag reports whether a Markdown heading contains tag as a
 // whole token. "# v1.2.30" does not satisfy tag v1.2.3. Prose that names
-// the tag outside a heading does not count.
+// the tag outside a heading does not count. Lines inside a fenced code
+// block (a ``` or ~~~ fence) do not count, so a sample heading in a fence
+// is not a release heading.
 func notesMentionTag(text, tag string) bool {
+	var fence fenceMark
 	for _, line := range strings.Split(text, "\n") {
+		if fence.open {
+			if fenceCloses(fence, line) {
+				fence = fenceMark{}
+			}
+			continue
+		}
+		if next, ok := openFence(line); ok {
+			fence = next
+			continue
+		}
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "#") {
 			continue
@@ -243,6 +289,58 @@ func notesMentionTag(text, tag string) bool {
 		}
 	}
 	return false
+}
+
+// fenceMark is an open ``` or ~~~ fence. n is the marker length.
+type fenceMark struct {
+	open bool
+	ch   byte
+	n    int
+}
+
+func openFence(line string) (fenceMark, bool) {
+	ch, n, rest, ok := fenceMarker(line)
+	if !ok {
+		return fenceMark{}, false
+	}
+	// A backtick fence's info string cannot contain a backtick.
+	if ch == '`' && strings.Contains(rest, "`") {
+		return fenceMark{}, false
+	}
+	return fenceMark{open: true, ch: ch, n: n}, true
+}
+
+func fenceCloses(f fenceMark, line string) bool {
+	if !f.open {
+		return false
+	}
+	ch, n, rest, ok := fenceMarker(line)
+	if !ok || ch != f.ch || n < f.n {
+		return false
+	}
+	return strings.TrimSpace(rest) == ""
+}
+
+// fenceMarker parses a trimmed line as a fence marker of at least three
+// backticks or tildes. rest is the unparsed suffix, including its leading
+// space.
+func fenceMarker(line string) (ch byte, n int, rest string, ok bool) {
+	line = strings.TrimSpace(line)
+	if len(line) < 3 {
+		return 0, 0, "", false
+	}
+	ch = line[0]
+	if ch != '`' && ch != '~' {
+		return 0, 0, "", false
+	}
+	n = 0
+	for n < len(line) && line[n] == ch {
+		n++
+	}
+	if n < 3 {
+		return 0, 0, "", false
+	}
+	return ch, n, line[n:], true
 }
 
 func tokenHas(line, tag string) bool {
@@ -336,7 +434,8 @@ type ciJob struct {
 // selectTagRun keeps runs of this tag push and returns the one with the
 // highest databaseId. A newer pending run hides an older green one. A
 // newer green run hides an older failed one. A main push of the same SHA
-// is not a match.
+// is not a match. A missing run and a run that is not completed are
+// retryable. Their text starts with noMatchPrefix or pendingPrefix.
 func selectTagRun(runs []ciRun, sha, tag string) (ciRun, error) {
 	best := -1
 	for i, r := range runs {
@@ -348,11 +447,11 @@ func selectTagRun(runs []ciRun, sha, tag string) (ciRun, error) {
 		}
 	}
 	if best < 0 {
-		return ciRun{}, fmt.Errorf("no matching run for tag %s commit %s", tag, sha)
+		return ciRun{}, &retryableError{msg: fmt.Sprintf("%s for tag %s commit %s", noMatchPrefix, tag, sha)}
 	}
 	chosen := runs[best]
 	if chosen.Status != "completed" {
-		return ciRun{}, fmt.Errorf("pending CI run %d for tag %s", chosen.DatabaseID, tag)
+		return ciRun{}, &retryableError{msg: fmt.Sprintf("%s CI run %d for tag %s", pendingPrefix, chosen.DatabaseID, tag)}
 	}
 	return chosen, nil
 }

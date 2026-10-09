@@ -8,9 +8,14 @@
 # ci.yml, event is push, headSha is the tag's peeled commit
 # (git rev-parse refs/tags/<tag>^{commit}), and headBranch is the tag name.
 # An annotated tag's object SHA is not that commit. A green run of the same
-# commit on main does not count. The gate waits while the matching run is
-# absent or not completed, then requires these jobs to have conclusion
-# success, by exact name:
+# commit on main does not count. release-gate exits 75 while the matching
+# run is absent or not completed. The workflow retries only that status.
+# Any other non-zero status is a hard failure. Stderr for a retryable
+# status starts with "release-gate: pending" or
+# "release-gate: no matching run". A pre-release tag that contains those
+# words, such as v0.1.0-pending, does not make a peel or GITHUB_SHA error
+# retryable. A completed run must have these jobs with conclusion success,
+# by exact name:
 #   go vet
 #   go test -race ./...
 #   fuzz smoke
@@ -18,13 +23,18 @@
 #   replace/go.work check
 #
 # The tag must match ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$.
+# The first step canonicalizes the ref from the environment: trim the
+# ends, strip one refs/tags/ prefix, and require that pattern. It does
+# not check out the ref. actions/checkout then receives only
+# refs/tags/<canonical tag>. A later step peels that tag and requires
+# HEAD to be the peeled commit.
 # docs/releases/<tag>.md must exist and contain a Markdown heading that
-# includes the tag. CHANGELOG.md must contain a line "## <tag>".
+# includes the tag. A heading inside a fenced code block does not count.
+# CHANGELOG.md must contain a line "## <tag>".
 # "## Unreleased" alone is not a release heading.
 #
 # Actions expressions are passed through env, with, or concurrency. They
-# do not appear in run scripts. The ref input is checked against the tag
-# pattern before it is used.
+# do not appear in run scripts.
 
 name: Release
 
@@ -62,11 +72,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Canonicalize release ref
+        id: tag
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref || github.ref }}
+        run: |
+          set -euo pipefail
+          ref="$RELEASE_REF"
+          # Trim ends only. Internal whitespace still fails the pattern.
+          ref="${ref#"${ref%%[![:space:]]*}"}"
+          ref="${ref%"${ref##*[![:space:]]}"}"
+          case "$ref" in
+            refs/tags/*) ref="${ref#refs/tags/}" ;;
+          esac
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if [[ ! "$ref" =~ $re ]]; then
+            echo "ref is not a Go module release tag" >&2
+            exit 1
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: refs/tags/${{ steps.tag.outputs.ref }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -76,7 +106,7 @@ jobs:
       - name: Resolve tag and peeled commit
         id: rev
         env:
-          RELEASE_REF: ${{ github.event.inputs.ref || github.ref }}
+          RELEASE_REF: ${{ steps.tag.outputs.ref }}
         run: |
           set -euo pipefail
           ref="$RELEASE_REF"
@@ -131,15 +161,19 @@ jobs:
           set -euo pipefail
           for i in $(seq 1 70); do
             echo "release-gate: CI attempt ${i}/70" >&2
-            if out=$("$RUNNER_TEMP/release-gate" -require-ci 2>&1); then
-              printf '%s\n' "$out"
+            set +e
+            "$RUNNER_TEMP/release-gate" -require-ci
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
               exit 0
             fi
-            printf '%s\n' "$out"
-            case "$out" in
-              *pending*|*"no matching run"*) sleep 30 ;;
-              *) exit 1 ;;
-            esac
+            # 75 is release-gate's retryable status. Do not match error text.
+            if [ "$status" -eq 75 ]; then
+              sleep 30
+              continue
+            fi
+            exit "$status"
           done
           echo "CI run for this tag did not become green" >&2
           exit 1

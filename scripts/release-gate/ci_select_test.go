@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -117,14 +118,15 @@ func TestSelectTagRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := selectTagRun(tc.runs, sha, tag)
 			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err=%v, want %q", err, tc.wantErr)
+				if err == nil || !strings.HasPrefix(err.Error(), tc.wantErr) || !retryable(err) {
+					t.Fatalf("err=%v, want retryable prefix %q", err, tc.wantErr)
 				}
-				if tc.wantErr == "pending" && strings.Contains(err.Error(), "no matching run") {
-					t.Fatalf("pending reported as missing: %v", err)
+				other := noMatchPrefix
+				if tc.wantErr == noMatchPrefix {
+					other = pendingPrefix
 				}
-				if tc.wantErr == "no matching run" && strings.Contains(err.Error(), "pending") {
-					t.Fatalf("missing reported as pending: %v", err)
+				if strings.HasPrefix(err.Error(), other) {
+					t.Fatalf("prefix %q reported as %q: %v", tc.wantErr, other, err)
 				}
 				return
 			}
@@ -247,7 +249,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 		installFakeGH(t, oneRun(30, "completed", "success", "push", repo.tag, repo.tagObj), viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.commit)
 		_, _, err := requireGreenCI()
-		if err == nil || !strings.Contains(err.Error(), "no matching run") {
+		if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), noMatchPrefix+" ") {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -289,7 +291,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 		installFakeGH(t, list, viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.commit)
 		_, _, err := requireGreenCI()
-		if err == nil || !strings.Contains(err.Error(), "pending") || strings.Contains(err.Error(), "no matching run") {
+		if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), pendingPrefix+" ") || strings.HasPrefix(err.Error(), noMatchPrefix) {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -298,7 +300,7 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 		installFakeGH(t, oneRun(11, "completed", "success", "pull_request", repo.tag, repo.commit), viewShouldNotRun(t))
 		setTagEnv(t, repo.tag, repo.commit)
 		_, _, err := requireGreenCI()
-		if err == nil || !strings.Contains(err.Error(), "no matching run") {
+		if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), noMatchPrefix+" ") {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -311,6 +313,87 @@ func TestRequireCIWithFakeGH(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 	})
+}
+
+func TestPendingPrereleaseIsNotARetrySignal(t *testing.T) {
+	const tag = "v0.1.0-pending"
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err := selectTagRun(nil, sha, tag)
+	if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), noMatchPrefix+" ") {
+		t.Fatalf("missing run: %v", err)
+	}
+	if strings.HasPrefix(err.Error(), pendingPrefix) {
+		t.Fatalf("missing run used the pending prefix: %v", err)
+	}
+	_, err = selectTagRun([]ciRun{{
+		DatabaseID: 4, Status: "queued", HeadSHA: sha, Event: "push", HeadBranch: tag,
+	}}, sha, tag)
+	if err == nil || !retryable(err) || !strings.HasPrefix(err.Error(), pendingPrefix+" ") {
+		t.Fatalf("pending run: %v", err)
+	}
+
+	repo := annotatedTag(t, tag)
+
+	t.Run("sha mismatch exits 1", func(t *testing.T) {
+		t.Chdir(repo.dir)
+		installFakeGH(t, "[]", viewShouldNotRun(t))
+		setTagEnv(t, tag, repo.tagObj)
+		code, msg := runRequireCI(t)
+		if code != 1 || retryableText(msg) || !strings.Contains(msg, "not the peeled commit") || !strings.Contains(msg, tag) {
+			t.Fatalf("code %d\n%s", code, msg)
+		}
+	})
+
+	t.Run("missing tag peel exits 1", func(t *testing.T) {
+		dir := t.TempDir()
+		git(t, dir, "init", "-b", "main")
+		t.Chdir(dir)
+		setTagEnv(t, tag, repo.commit)
+		code, msg := runRequireCI(t)
+		if code != 1 || retryableText(msg) || !strings.Contains(msg, "peel "+tag) {
+			t.Fatalf("code %d\n%s", code, msg)
+		}
+	})
+
+	t.Run("pending run exits 75", func(t *testing.T) {
+		t.Chdir(repo.dir)
+		installFakeGH(t, oneRun(30, "in_progress", "", "push", tag, repo.commit), viewShouldNotRun(t))
+		setTagEnv(t, tag, repo.commit)
+		code, msg := runRequireCI(t)
+		if code != exitRetryable || !strings.HasPrefix(msg, "release-gate: "+pendingPrefix+" ") || !strings.Contains(msg, tag) {
+			t.Fatalf("code %d\n%s", code, msg)
+		}
+	})
+
+	t.Run("no matching run exits 75", func(t *testing.T) {
+		t.Chdir(repo.dir)
+		installFakeGH(t, "[]", viewShouldNotRun(t))
+		setTagEnv(t, tag, repo.commit)
+		code, msg := runRequireCI(t)
+		if code != exitRetryable || !strings.HasPrefix(msg, "release-gate: "+noMatchPrefix+" ") || !strings.Contains(msg, tag) {
+			t.Fatalf("code %d\n%s", code, msg)
+		}
+		if strings.HasPrefix(msg, "release-gate: "+pendingPrefix) {
+			t.Fatalf("no matching run used the pending prefix:\n%s", msg)
+		}
+	})
+
+	t.Run("failed job exits 1", func(t *testing.T) {
+		t.Chdir(repo.dir)
+		installFakeGH(t, oneRun(30, "completed", "success", "push", tag, repo.commit), viewConclusion(t, "go vet", "failure"))
+		setTagEnv(t, tag, repo.commit)
+		code, msg := runRequireCI(t)
+		if code != 1 || retryableText(msg) || !strings.Contains(msg, "not green") {
+			t.Fatalf("code %d\n%s", code, msg)
+		}
+	})
+}
+
+func runRequireCI(t *testing.T) (int, string) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	code := run([]string{"-require-ci"}, &out, &errb)
+	return code, errb.String()
 }
 
 func TestParseRunsIgnoresExtraFields(t *testing.T) {
@@ -333,6 +416,11 @@ type taggedRepo struct {
 
 func annotatedRepo(t *testing.T) taggedRepo {
 	t.Helper()
+	return annotatedTag(t, "v1.2.3")
+}
+
+func annotatedTag(t *testing.T, tag string) taggedRepo {
+	t.Helper()
 	dir := t.TempDir()
 	git(t, dir, "init", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x\n"), 0o644); err != nil {
@@ -341,12 +429,12 @@ func annotatedRepo(t *testing.T) taggedRepo {
 	git(t, dir, "add", "f")
 	git(t, dir, "commit", "--no-gpg-sign", "-m", "init")
 	commit := git(t, dir, "rev-parse", "HEAD")
-	git(t, dir, "tag", "--no-sign", "-a", "-m", "v1.2.3", "v1.2.3")
-	obj := git(t, dir, "rev-parse", "refs/tags/v1.2.3")
+	git(t, dir, "tag", "--no-sign", "-a", "-m", tag, tag)
+	obj := git(t, dir, "rev-parse", "refs/tags/"+tag)
 	if obj == commit {
 		t.Fatal("tag was not annotated")
 	}
-	return taggedRepo{dir: dir, commit: commit, tagObj: obj, tag: "v1.2.3"}
+	return taggedRepo{dir: dir, commit: commit, tagObj: obj, tag: tag}
 }
 
 func setTagEnv(t *testing.T, tag, sha string) {

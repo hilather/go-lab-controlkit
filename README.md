@@ -127,19 +127,24 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
   workflow (`.github/workflows/release.yml`). controlkit is a library, so the
   release workflow is a gate only. It does not publish an image, a binary, or
   a GitHub Release. `workflow_dispatch` re-runs the gate for one tag and
-  publishes nothing. The ref input has to be a tag of the shape above.
+  publishes nothing. Before checkout, the workflow trims that ref, strips one
+  `refs/tags/` prefix, and requires the pattern above. Checkout receives only
+  `refs/tags/<tag>`. A ref that fails the pattern is not checked out.
 - The gate matches the CI run of that tag push: workflow `ci.yml`, event
   `push`, `headSha` equal to the peeled commit
   (`git rev-parse refs/tags/<tag>^{commit}`), and `headBranch` equal to the
-  tag name. An annotated tag's object SHA is not the commit. It waits while
-  that run is missing or not completed, then requires the newest matching
-  run (highest `databaseId`) to have these jobs green, by exact name:
-  `go vet`, `go test -race ./...`, `fuzz smoke`, `govulncheck`,
-  `replace/go.work check`. A green run on `main` for the same commit does
-  not count.
+  tag name. An annotated tag's object SHA is not the commit. While that run
+  is missing or not completed, release-gate exits 75 and the workflow
+  retries. Any other non-zero status stops the retry. A pre-release whose
+  name contains "pending", such as `v0.1.0-pending`, does not turn a peel or
+  `GITHUB_SHA` error into a retry. The newest matching run (highest
+  `databaseId`) must have these jobs green, by exact name: `go vet`,
+  `go test -race ./...`, `fuzz smoke`, `govulncheck`, `replace/go.work check`.
+  A green run on `main` for the same commit does not count.
 - `docs/releases/<tag>.md` must exist at the tagged commit and contain a
-  Markdown heading that includes the tag (for example `# v0.1.0`).
-  `CHANGELOG.md` must contain a line whose text is `## ` plus the tag.
+  Markdown heading that includes the tag (for example `# v0.1.0`). A heading
+  inside a fenced code block does not count. `CHANGELOG.md` must contain a
+  line whose text is `## ` plus the tag.
 
 ## Contributing
 

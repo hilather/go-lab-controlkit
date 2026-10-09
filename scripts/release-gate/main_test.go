@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,6 +177,26 @@ func TestValidateRelease(t *testing.T) {
 			wantErr:   "heading",
 		},
 		{
+			name:      "fenced heading alone",
+			tag:       "v1.2.3",
+			notes:     "```\n# v1.2.3\n```\n",
+			changelog: "## v1.2.3\n",
+			wantErr:   "heading",
+		},
+		{
+			name:      "heading after a fence",
+			tag:       "v1.2.3",
+			notes:     "```\n# v1.2.3\n```\n\n# v1.2.3\n",
+			changelog: "## v1.2.3\n",
+		},
+		{
+			name:      "pending pre-release without a heading",
+			tag:       "v0.1.0-pending",
+			notes:     "# Release\n\nThe sample tag is not a heading.\n",
+			changelog: "## v0.1.0-pending\n",
+			wantErr:   "heading",
+		},
+		{
 			name:     "missing changelog",
 			tag:      "v1.2.3",
 			notes:    "# v1.2.3\n",
@@ -212,6 +233,39 @@ func TestValidateRelease(t *testing.T) {
 			}
 			if retryable(err) {
 				t.Fatalf("notes error looks retryable: %v", err)
+			}
+		})
+	}
+}
+
+func TestNotesMentionTagFences(t *testing.T) {
+	const tag = "v1.2.3"
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "fenced heading alone", text: "```\n# v1.2.3\n```\n", want: false},
+		{name: "tilde fence", text: "~~~\n# v1.2.3\n~~~\n", want: false},
+		{name: "real heading", text: "# v1.2.3\n", want: true},
+		{name: "fence then real heading", text: "```\n# v1.2.3\n```\n# v1.2.3\n", want: true},
+		{name: "real heading then fence", text: "# v1.2.3\n```\n# v9.9.9\n```\n", want: true},
+		{name: "unclosed fence hides a later heading", text: "```\n# v1.2.3\n", want: false},
+		{name: "short close stays open", text: "````\n# v1.2.3\n```\n# v1.2.3\n", want: false},
+		{name: "long close then heading", text: "```\n# v1.2.3\n````\n# v1.2.3\n", want: true},
+		{name: "info string", text: "```markdown\n# v1.2.3\n```\n", want: false},
+		{name: "info string is not a heading", text: "``` # v1.2.3\n", want: false},
+		{name: "mismatched closer", text: "~~~\n# v1.2.3\n```\n# v1.2.3\n", want: false},
+		{name: "closer with trailing text", text: "```\n# v1.2.3\n``` text\n# v1.2.3\n", want: false},
+		{name: "indented fence", text: "   ```\n# v1.2.3\n   ```\n", want: false},
+		{name: "heading outside an indented fence", text: "   ```\n# sample\n   ```\n# v1.2.3\n", want: true},
+		{name: "crlf heading", text: "# v1.2.3\r\n", want: true},
+		{name: "near tag still fails", text: "# v1.2.30\n", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := notesMentionTag(tc.text, tag); got != tc.want {
+				t.Fatalf("notesMentionTag=%v, want %v\n%s", got, tc.want, tc.text)
 			}
 		})
 	}
@@ -424,8 +478,26 @@ func TestWorkflowContract(t *testing.T) {
 	if !strings.Contains(rel, "refs/tags/${ref}^{commit}") {
 		t.Fatal("workflow does not peel the tag")
 	}
-	if !strings.Contains(rel, `*pending*|*"no matching run"*`) {
-		t.Fatal("workflow retry pattern drifted")
+	if strings.Count(rel, "re='"+releaseTagPatternSrc+"'") != 2 {
+		t.Fatal("tag pattern must be checked before checkout and again before peel")
+	}
+	canon := strings.Index(rel, "\n      - name: Canonicalize release ref\n")
+	checkout := strings.Index(rel, "\n      - uses: actions/checkout@")
+	if canon < 0 || checkout < 0 || canon > checkout {
+		t.Fatal("canonicalize step must precede checkout")
+	}
+	if !strings.Contains(rel, "ref: refs/tags/${{ steps.tag.outputs.ref }}") {
+		t.Fatal("checkout ref is not refs/tags/<canonical tag>")
+	}
+	if strings.Contains(rel, "ref: ${{ github.event.inputs.ref || github.ref }}") {
+		t.Fatal("checkout still receives the raw ref")
+	}
+	wantStatus := fmt.Sprintf(`[ "$status" -eq %d ]`, exitRetryable)
+	if !strings.Contains(rel, wantStatus) {
+		t.Fatalf("workflow retry status drifted from exit %d", exitRetryable)
+	}
+	if strings.Contains(rel, "*pending*") || strings.Contains(rel, `*"no matching run"*`) {
+		t.Fatal("workflow still retries on a substring of command output")
 	}
 	if !strings.Contains(rel, "contents: read") || !strings.Contains(rel, "actions: read") {
 		t.Fatal("release permissions")
@@ -443,12 +515,13 @@ func TestWorkflowContract(t *testing.T) {
 	}
 }
 
-func retryable(err error) bool {
-	return err != nil && retryableText(err.Error())
-}
-
 func retryableText(msg string) bool {
-	return strings.Contains(msg, "pending") || strings.Contains(msg, "no matching run")
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(line, "release-gate: "+pendingPrefix) || strings.HasPrefix(line, "release-gate: "+noMatchPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func readWorkflow(t *testing.T, name string) string {
