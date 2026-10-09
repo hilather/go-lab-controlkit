@@ -31,7 +31,7 @@ concurrency:
 env:
   # Matches the consumers' Go pin, so govulncheck covers the standard library
   # they build with. go.mod stays "go 1.26" with no toolchain line.
-  GO_VERSION: "1.26.8"
+  GO_VERSION: "1.26.9"
   GOTOOLCHAIN: local
   GOPROXY: https://proxy.golang.org,direct
 

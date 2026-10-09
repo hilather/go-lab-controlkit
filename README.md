@@ -158,7 +158,7 @@ Changes land on `main` through pull requests. Branch protection on `main`:
 
 The merge gate: Keystone posts a COMMENT review with LGTM, and Helm squash-merges only when the `commit_id` of Keystone's latest LGTM COMMENT review equals the pull request head SHA. A push after the LGTM needs a new one. Muse never merges or tags.
 
-CI pins Go 1.26.8. The `go vet` job also runs gofmt and `go build ./...`. Run the same checks locally with `make ci`.
+CI pins Go 1.26.9. The `go vet` job also runs gofmt and `go build ./...`. Run the same checks locally with `make ci`.
 
 CI runs on pull requests, on pushes to `main`, and on `v*` tag pushes. A tag
 run and a `main` run do not cancel each other: the concurrency group uses
