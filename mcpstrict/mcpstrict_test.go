@@ -735,20 +735,34 @@ func wideAllocLimit(n int) uint64 {
 
 const typedAllocMul = 60
 
-// typedAllocLimit bounds the Spec.Typed shapes this test pins. On
-// 2026-10-08 a non-empty Typed map decoded the input once with
-// encoding/json, the same decode as before and as the MCP SDK. A flat
-// array of numbers with a root Typed entry was 43.07× (the same with
-// -race). A wide object with a root Typed entry was 31.44× under -race
-// and 30.21× without, the decode on top of the duplicate-key map. Both
-// stayed linear (doubling growth 1.97× to 2.00×). 60× is 1.4× the flat
-// 43.07×, rounded (1.39× headroom). That is the higher of the two pinned
+// typedAllocLimit bounds a root Typed entry. On 2026-10-08 a non-empty
+// Typed map decoded the input once with encoding/json, the same decode
+// as before and as the MCP SDK. A flat array of numbers with a root
+// Typed entry was about 43× (43.07×, the same with -race). A wide object
+// with a root Typed entry was about 31× (31.44× under -race, 30.21×
+// without), the decode on top of the duplicate-key map. Both stayed
+// linear (doubling growth 1.97× to 2.00×). 60× is 1.4× the flat 43.07×,
+// rounded (1.39× headroom). That is the higher of the two pinned root
 // shapes, so the wide object uses this limit too. The limit is linear in
-// the input. Slack is allocSlack. A Typed "/*" walk over every element of
-// a flat array was about 71× under -race, from per-element pattern slices
-// on top of the decode. That walk is still linear and is not this multiplier.
+// the input. Slack is allocSlack. A Typed "/*" walk over every element
+// of a flat array is about 66× without -race and about 71× with it, still
+// linear, and uses typedStarAllocLimit.
 func typedAllocLimit(n int) uint64 {
 	return uint64(typedAllocMul*n) + allocSlack
+}
+
+const typedStarAllocMul = 99
+
+// typedStarAllocLimit bounds a Typed "/*" walk over every element of a
+// flat array of numbers. On 2026-10-08 that walk allocated 65.84× to
+// 66.53× the input without -race and 69.97× to 71.06× with -race, from
+// about 256 KiB through 2 MiB. The worst ratio is 71.06×. The extra over
+// the root decode is one filtered pattern slice per element. Doubling
+// the input multiplied TotalAlloc by 1.98× to 2.02×, so the walk is
+// linear. 99× is 1.4× that 71.06×, rounded (1.39× headroom). Slack is
+// allocSlack.
+func typedStarAllocLimit(n int) uint64 {
+	return uint64(typedStarAllocMul*n) + allocSlack
 }
 
 // allocProbe is the smaller wide and typed input. The doubling check uses
@@ -757,7 +771,8 @@ func typedAllocLimit(n int) uint64 {
 // seconds a sample. Under -race the probe is 64 KiB (larger input about
 // 128 KiB). A 256 KiB typed pair took about 9 s under -race on
 // 2026-10-08, and the ratio had already flattened by 256 KiB (20.20× wide,
-// 43.04× flat Typed, 31.43× wide Typed).
+// 43.04× flat Typed, 31.43× wide Typed, 65.97× flat Typed "/*" without
+// -race and 71.04× with it). The "/*" case uses this same probe.
 func allocProbe() int {
 	if checkAllocRace() {
 		return 64 << 10
@@ -953,6 +968,15 @@ func TestCheckAllocBound(t *testing.T) {
 	})
 	t.Run("typed/wide-object", func(t *testing.T) {
 		measureAllocPair(t, wideSmall, wideLarge, typedWide, typedAllocLimit)
+	})
+	// A Typed "/*" walks every element of the flat array. The elements
+	// are numbers, so the key set does not reject them. The cost above
+	// the root decode is one filtered pattern slice per element.
+	// typedAllocLimit (60×) does not cover it. The same probe as the
+	// other typed cases keeps the -race run to a few seconds.
+	typedStar := Spec{Typed: map[string]KeySet{"/*": {Keys: map[string]bool{"unused": true}}}}
+	t.Run("flat/typed-star", func(t *testing.T) {
+		measureAllocPair(t, flatSmall, flatLarge, typedStar, typedStarAllocLimit)
 	})
 }
 

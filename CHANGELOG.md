@@ -11,13 +11,14 @@ commit log.
   faster than linearly. The 8× + 256 KiB bound is only deep and flat inputs
   that are not wide objects (measured at most about 3.5×). A wide object is
   about 20×, from the duplicate-key map and the decoded key strings.
-  `Spec.Typed` decodes the input once with `encoding/json`, about 43× for a
-  flat array of numbers and about 31× for a wide object, the same decode the
-  MCP SDK pays. A Typed `*` walk over every array element measured about 71×
-  under the race detector and is still linear. `TestCheckAllocBound` pins the
-  wide object at 28× + 256 KiB and the Typed decode at 60× + 256 KiB, and
-  fails if doubling the input multiplies allocations by more than 2.6×.
-  Measured 2026-10-08 on Go 1.26.8.
+  A root Typed decode is about 43× for a flat array of numbers and about
+  31× for a wide object, the same `encoding/json` decode the MCP SDK pays.
+  A Typed `/*` walk over every element of a flat array is about 66× to 71×,
+  from per-element pattern slices on top of that decode, and is still
+  linear. `TestCheckAllocBound` pins the wide object at 28× + 256 KiB, the
+  root Typed decode at 60× + 256 KiB, and the Typed `/*` walk at 99× + 256
+  KiB, and fails if doubling the input multiplies allocations by more than
+  2.6×. Measured 2026-10-08 on Go 1.26.8.
 - Option ledger: `authn.MinSecretBytes` stays a warning in B (dns enforces
   the 32-byte floor in a later minor, and a dns PR outside B generates
   tokens of at least 32 bytes now). snmp refuses a zero-token bearer with

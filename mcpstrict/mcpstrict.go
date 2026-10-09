@@ -75,12 +75,12 @@ type Spec struct {
 // linearly. Deep and flat inputs that are not wide objects stay within
 // about 8× the input plus 256 KiB. A wide object is about 20×, from the
 // duplicate-key map and one decoded string per key. When Typed is
-// non-empty, the encoding/json decode into any is about 43× for a flat
-// array of numbers and about 31× for a wide object, the same decode the
-// MCP SDK pays. A Typed "*" walk over every element of a flat array
-// measured about 71× under the race detector, from per-element pattern
-// slices on top of that decode, and is still linear. Measured 2026-10-08
-// on Go 1.26.8.
+// non-empty, a root Typed decode is about 43× for a flat array of
+// numbers and about 31× for a wide object, the same encoding/json decode
+// the MCP SDK pays. A Typed "/*" walk over every element of a flat array
+// is about 66× without the race detector and about 71× with it, from
+// per-element pattern slices on top of that decode, and is still linear.
+// Measured 2026-10-08 on Go 1.26.8.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
