@@ -23,11 +23,15 @@ commit log.
   for a root Typed decode and 2.06× for a flat Typed `/*` walk. Measured
   2026-10-08 on Go 1.26.8; the two-key array on Go 1.26.9.
 - Option ledger: `authn.MinSecretBytes` follows the Q8 timeline. A dns
-  PR outside B now generates tokens of at least 32 bytes. dns's next
+  PR outside B makes the examples/main-lab README generate tokens of at
+  least 32 bytes, and that PR's CHANGELOG line flags shorter tokens as
+  deprecated so operators get a release before the refusal. dns's next
   minor, outside B, refuses shorter tokens. B follows dns `main` at M6:
   if that minor has landed, the facade sets `MinSecretBytes` to 32 and
-  P8 is omitted; only if M6 ships first does B keep P8's warning. B
-  never loosens a floor dns `main` already enforces. snmp, ntp, and
+  P8 is omitted; only if M6 ships first does B keep P8's warning plus a
+  kittest pin, and when dns's enforcement minor lands later it sets
+  `MinSecretBytes` to 32 in the facade. B never loosens a floor dns
+  `main` already enforces. snmp, ntp, and
   netconf refuse a zero-token bearer at boot when management binds or a
   stdio pin is built, and at reset through a control adapter. A reset
   with no adapter runs no predicate. maildev and syslog keep `Accept`
