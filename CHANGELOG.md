@@ -11,8 +11,8 @@ Nothing yet.
 
 ### Changed
 
-- `mcpstrict`: Check's allocation is linear in the input. No shape grows
-  faster than linearly. The 8× + 256 KiB bound covers three fixtures, each
+- `mcpstrict`: Check's allocation measured linear on every pinned shape;
+  per-shape bounds are enforced by tests. The 8× + 256 KiB bound covers three fixtures, each
   at most about 3.5×: a nested array, a single-key deep object, and a flat
   array of zeros. A wide object is about 20×, from the duplicate-key map
   and the decoded key strings. A flat array of small two-key objects is
