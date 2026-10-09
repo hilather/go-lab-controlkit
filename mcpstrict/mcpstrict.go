@@ -4,8 +4,9 @@
 // Check runs only after the SDK has accepted the call. Nil, empty, and
 // "{}" arguments are accepted. A non-JSON body never reaches Check.
 //
-// Check allocates linearly in the input size. No shape grows faster than
-// linearly. A wide object is about 20× the input. A root Typed decode is
+// Check's allocation measured linear in the input size on every pinned
+// shape; per-shape bounds are enforced by tests, along with a size-doubling
+// check and a fuzz ceiling for Spec{}. A wide object is about 20× the input. A root Typed decode is
 // about 43×. A Typed "/*" walk is about 66× to 71× over a flat array of
 // numbers, and about 34× over a wide object. A flat array of small
 // two-key objects is about 41×. The 8× + 256 KiB bound covers only the
@@ -73,8 +74,9 @@ type Spec struct {
 // decodes the input once with encoding/json; that decode is not repeated
 // per node.
 //
-// Allocation is linear in the input size. No shape grows faster than
-// linearly. A wide object is about 20×, from the duplicate-key map and
+// Allocation measured linear in the input size on every pinned shape;
+// per-shape bounds are enforced by tests, along with a size-doubling check
+// and a fuzz ceiling for Spec{}. A wide object is about 20×, from the duplicate-key map and
 // one decoded string per key. When Typed is non-empty, a root Typed
 // decode is about 43× for a flat array of numbers and about 31× for a
 // wide object, the same encoding/json decode the MCP SDK pays. A Typed
