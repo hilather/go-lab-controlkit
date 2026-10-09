@@ -7,7 +7,7 @@
 // this helper (plan section 6.0 step 5). It feeds mcpstrict a document
 // that repeats a root key and checks that the caller's snapshot is
 // unchanged after Check rejects it, and that Check did not modify the
-// duplicate document.
+// caller's document or the duplicate document.
 package kittest
 
 import (

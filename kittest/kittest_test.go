@@ -1588,6 +1588,25 @@ func TestDuplicateKeyNoEffectRejectsInputWrite(t *testing.T) {
 	if !fake.failed || len(fake.msgs) != 1 || !strings.Contains(fake.msgs[0], "duplicate document bytes changed") {
 		t.Fatalf("write: failed=%v msgs=%v", fake.failed, fake.msgs)
 	}
+
+	// The same byte on every call mutates doc during the first Check.
+	// The duplicate is built from that buffer, so the later write is a
+	// no-op and only the caller's bytes show it. {"n":1} becomes {"n":9}.
+	fixed := json.RawMessage(`{"n":1}`)
+	every := mcpstrict.Spec{Open: map[string]func(json.RawMessage) error{
+		"/n": func(m json.RawMessage) error {
+			if len(m) > 0 {
+				m[0] = '9'
+			}
+			return nil
+		},
+	}}
+	wrote := runFake(func(tb Testing) {
+		DuplicateKeyNoEffect(tb, every, fixed, func() string { return "quiet" })
+	})
+	if !wrote.failed || len(wrote.msgs) != 1 || wrote.msgs[0] != "document bytes changed" {
+		t.Fatalf("every write: failed=%v msgs=%v", wrote.failed, wrote.msgs)
+	}
 }
 
 func tdir(t *testing.T) string {
