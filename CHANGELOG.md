@@ -18,6 +18,12 @@ commit log.
   wide object at 28× + 256 KiB and the Typed decode at 60× + 256 KiB, and
   fails if doubling the input multiplies allocations by more than 2.6×.
   Measured 2026-10-08 on Go 1.26.8.
+- Option ledger: `authn.MinSecretBytes` stays a warning in B (dns enforces
+  the 32-byte floor in a later minor, and a dns PR outside B generates
+  tokens of at least 32 bytes now). snmp refuses a zero-token bearer with
+  ntp and netconf; maildev and syslog keep `Accept` unset. The dns
+  bearer-profile loopback administrator is not a kit option and is removed
+  by a standalone dns PR.
 
 ### Added
 
