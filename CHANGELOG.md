@@ -19,12 +19,17 @@ commit log.
   root Typed decode at 60× + 256 KiB, and the Typed `/*` walk at 99× + 256
   KiB, and fails if doubling the input multiplies allocations by more than
   2.6×. Measured 2026-10-08 on Go 1.26.8.
-- Option ledger: `authn.MinSecretBytes` stays a warning in B (dns enforces
-  the 32-byte floor in a later minor, and a dns PR outside B generates
-  tokens of at least 32 bytes now). snmp refuses a zero-token bearer with
-  ntp and netconf; maildev and syslog keep `Accept` unset. The dns
-  bearer-profile loopback administrator is not a kit option and is removed
-  by a standalone dns PR.
+- Option ledger: `authn.MinSecretBytes` follows the Q8 timeline. A dns
+  PR outside B now generates tokens of at least 32 bytes. dns's next
+  minor, outside B, refuses shorter tokens. B follows dns `main` at M6:
+  if that minor has landed, the facade sets `MinSecretBytes` to 32 and
+  P8 is omitted; only if M6 ships first does B keep P8's warning. B
+  never loosens a floor dns `main` already enforces. snmp, ntp, and
+  netconf refuse a zero-token bearer at boot when management binds or a
+  stdio pin is built, and at reset through a control adapter. A reset
+  with no adapter runs no predicate. maildev and syslog keep `Accept`
+  unset. The dns bearer-profile loopback administrator is not a kit
+  option and is removed by a standalone dns PR.
 
 ### Added
 
