@@ -1,0 +1,145 @@
+# go-lab-controlkit tag gate.
+#
+# Library only: this workflow publishes nothing. No image, no binary, and
+# no GitHub Release. workflow_dispatch re-gates one tag and does not publish.
+#
+# On a v* tag push, CI (.github/workflows/ci.yml) starts its own run. This
+# gate keeps the newest run (highest databaseId) whose workflow file is
+# ci.yml, event is push, headSha is the tag's peeled commit
+# (git rev-parse refs/tags/<tag>^{commit}), and headBranch is the tag name.
+# An annotated tag's object SHA is not that commit. A green run of the same
+# commit on main does not count. The gate waits while the matching run is
+# absent or not completed, then requires these jobs to have conclusion
+# success, by exact name:
+#   go vet
+#   go test -race ./...
+#   fuzz smoke
+#   govulncheck
+#   replace/go.work check
+#
+# The tag must match ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$.
+# docs/releases/<tag>.md must exist and contain a Markdown heading that
+# includes the tag. CHANGELOG.md must contain a line "## <tag>".
+# "## Unreleased" alone is not a release heading.
+#
+# Actions expressions are passed through env, with, or concurrency. They
+# do not appear in run scripts. The ref input is checked against the tag
+# pattern before it is used.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Release tag to re-gate (vX.Y.Z or refs/tags/vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GO_VERSION: "1.26.8"
+  GOTOOLCHAIN: local
+  GOPROXY: https://proxy.golang.org,direct
+
+jobs:
+  tag-gate:
+    name: tag-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Resolve tag and peeled commit
+        id: rev
+        env:
+          RELEASE_REF: ${{ github.event.inputs.ref || github.ref }}
+        run: |
+          set -euo pipefail
+          ref="$RELEASE_REF"
+          # Trim ends only. Internal whitespace still fails the pattern.
+          ref="${ref#"${ref%%[![:space:]]*}"}"
+          ref="${ref%"${ref##*[![:space:]]}"}"
+          case "$ref" in
+            refs/tags/*) ref="${ref#refs/tags/}" ;;
+          esac
+          re='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if [[ ! "$ref" =~ $re ]]; then
+            echo "ref is not a Go module release tag" >&2
+            exit 1
+          fi
+          notes="docs/releases/${ref}.md"
+          if [ ! -f "$notes" ]; then
+            echo "missing release notes ${notes}" >&2
+            exit 1
+          fi
+          sha="$(git rev-parse --verify --end-of-options "refs/tags/${ref}^{commit}")"
+          head="$(git rev-parse --verify HEAD)"
+          if [ "$head" != "$sha" ]; then
+            echo "HEAD ${head} is not the peeled commit ${sha} of ${ref}" >&2
+            exit 1
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "notes=${notes}" >> "$GITHUB_OUTPUT"
+
+      - name: Reject dirty worktree
+        run: git diff --exit-code && git diff --cached --exit-code
+
+      - name: Validate release notes and changelog
+        env:
+          NOTES: ${{ steps.rev.outputs.notes }}
+          TAG: ${{ steps.rev.outputs.ref }}
+        run: go run ./scripts/release-gate -notes-only -notes "$NOTES" -tag "$TAG"
+
+      - name: Check module path
+        run: go run ./scripts/release-gate -module
+
+      - name: Build release-gate
+        run: go build -o "$RUNNER_TEMP/release-gate" ./scripts/release-gate
+
+      - name: Require green CI on this tag push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ steps.rev.outputs.sha }}
+          GITHUB_REF: refs/tags/${{ steps.rev.outputs.ref }}
+          GITHUB_REF_NAME: ${{ steps.rev.outputs.ref }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 70); do
+            echo "release-gate: CI attempt ${i}/70" >&2
+            if out=$("$RUNNER_TEMP/release-gate" -require-ci 2>&1); then
+              printf '%s\n' "$out"
+              exit 0
+            fi
+            printf '%s\n' "$out"
+            case "$out" in
+              *pending*|*"no matching run"*) sleep 30 ;;
+              *) exit 1 ;;
+            esac
+          done
+          echo "CI run for this tag did not become green" >&2
+          exit 1
