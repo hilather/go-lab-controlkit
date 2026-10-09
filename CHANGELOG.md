@@ -7,6 +7,17 @@ commit log.
 
 ### Added
 
+- CI runs on `v*` tag pushes as well as on pull requests and `main`. The
+  concurrency group uses `github.ref`, so a tag run does not cancel a `main`
+  run.
+- Release workflow (`.github/workflows/release.yml`) and
+  `scripts/release-gate`. The gate matches the tag push's own CI run:
+  workflow `ci.yml`, event `push`, `headSha` the peeled commit, `headBranch`
+  the tag name, newest run only. Required jobs are the CI job names. The
+  tagged commit must contain `docs/releases/<tag>.md` (a Markdown heading
+  that includes the tag) and a `## <tag>` line in `CHANGELOG.md`. There is
+  no image and no GitHub Release. `apidiff` stays a required check from
+  `v1.0.0`, not in this workflow.
 - Repository setup: Apache-2.0 license, README with the consumer pin matrix
   and option ledger, SECURITY.md, CODEOWNERS, and CI (`go vet`,
   `go test -race ./...`, fuzz smoke, `govulncheck`, and a `replace`/`go.work`
