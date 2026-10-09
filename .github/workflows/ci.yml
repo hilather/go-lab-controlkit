@@ -5,6 +5,11 @@
 #   "replace/go.work check".
 # An apidiff check becomes required from v1.0.0. Renaming a job breaks the
 # required check, so change branch protection in the same PR.
+#
+# v* tag pushes run the same jobs. The release workflow matches that run
+# by commit SHA and tag name. The concurrency group below uses github.ref,
+# which is refs/heads/main for a branch push and refs/tags/vX.Y.Z for a
+# tag push, so a tag run does not cancel a main run or the reverse.
 
 name: CI
 
@@ -13,6 +18,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
 
 permissions:
   contents: read

@@ -14,9 +14,10 @@ Module path: `github.com/hilather/go-lab-controlkit`
 
 ## Status
 
-The v0.1.0 pull request has landed the packages. Nothing is tagged. The
-release workflow lands in the release-prep pull request, before the first
-tag.
+The v0.1.0 packages have landed. Nothing is tagged. The release workflow
+gates a `v*` tag and does not publish an image, a binary, or a GitHub
+Release. The release-prep pull request adds `docs/releases/v0.1.0.md` and
+folds the changelog before Helm tags `v0.1.0`. Muse never tags.
 
 ## Packages
 
@@ -103,17 +104,48 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 
 ## Versioning and releases
 
-- SemVer tags `vMAJOR.MINOR.PATCH`, starting at `v0.1.0`.
+- SemVer tags `vMAJOR.MINOR.PATCH`, starting at `v0.1.0`. A pre-release is
+  `vMAJOR.MINOR.PATCH-PRE` (for example `v0.1.0-rc.1`). The release workflow
+  accepts only tags that match
+  `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`.
 - In v0 a minor release may break the API. At most one API-breaking minor is in
   flight at a time: every migrated consumer bumps to it before the next
   breaking minor is tagged. Non-breaking patches are not limited.
 - `v1.0.0` is cut after every consumer has migrated and the starred option
   ledger rows are resolved or owned. Strict SemVer applies from then on, and an
-  `apidiff` check becomes a required CI check.
+  `apidiff` (or `gorelease`) check becomes a required CI check. It is not part
+  of the v0 gate.
 - Tags are never moved or deleted. A bad release gets a `retract` directive in
-  `go.mod` and a new patch tag.
+  `go.mod` and a new patch tag. Proxy tags are permanent.
 - Security fixes ship as a patch tag. On the day it is tagged, every consumer
   that pins an affected version gets a bump PR.
+- Helm tags. Muse never tags or merges.
+- A release starts as a release-prep pull request. That PR adds
+  `docs/releases/vX.Y.Z.md` and folds `CHANGELOG.md` so the tag has a line
+  `## vX.Y.Z`. `## Unreleased` alone is not enough. Ilya reviews. Helm
+  squash-merges and pushes the tag.
+- Pushing a `v*` tag runs CI (`.github/workflows/ci.yml`) and the release
+  workflow (`.github/workflows/release.yml`). controlkit is a library, so the
+  release workflow is a gate only. It does not publish an image, a binary, or
+  a GitHub Release. `workflow_dispatch` re-runs the gate for one tag and
+  publishes nothing. Before checkout, the workflow trims that ref, strips one
+  `refs/tags/` prefix, and requires the pattern above. Checkout receives only
+  `refs/tags/<tag>`. A ref that fails the pattern is not checked out.
+- The gate matches the CI run of that tag push: workflow `ci.yml`, event
+  `push`, `headSha` equal to the peeled commit
+  (`git rev-parse refs/tags/<tag>^{commit}`), and `headBranch` equal to the
+  tag name. An annotated tag's object SHA is not the commit. While that run
+  is missing or not completed, release-gate exits 75 and the workflow
+  retries. Any other non-zero status stops the retry. A pre-release whose
+  name contains "pending", such as `v0.1.0-pending`, does not turn a peel or
+  `GITHUB_SHA` error into a retry. The newest matching run (highest
+  `databaseId`) must have these jobs green, by exact name: `go vet`,
+  `go test -race ./...`, `fuzz smoke`, `govulncheck`, `replace/go.work check`.
+  A green run on `main` for the same commit does not count.
+- `docs/releases/<tag>.md` must exist at the tagged commit and contain a
+  Markdown heading that includes the tag (for example `# v0.1.0`). A heading
+  inside a fenced code block does not count. `CHANGELOG.md` must contain a
+  line whose text is `## ` plus the tag.
 
 ## Contributing
 
@@ -128,6 +160,14 @@ Changes land on `main` through pull requests. Branch protection on `main`:
 The merge gate: Keystone posts a COMMENT review with LGTM, and Helm squash-merges only when the `commit_id` of Keystone's latest LGTM COMMENT review equals the pull request head SHA. A push after the LGTM needs a new one. Muse never merges or tags.
 
 CI pins Go 1.26.9. The `go vet` job also runs gofmt and `go build ./...`. Run the same checks locally with `make ci`.
+
+CI runs on pull requests, on pushes to `main`, and on `v*` tag pushes. A tag
+run and a `main` run do not cancel each other: the concurrency group uses
+`github.ref` (`refs/heads/main` versus `refs/tags/vX.Y.Z`).
+
+The release workflow is `.github/workflows/release.yml`. It is the tag gate
+in Versioning and releases. Helm pushes the tag after the release-prep pull
+request. Muse never tags. `apidiff` is a required check from `v1.0.0`.
 
 ## Security
 
