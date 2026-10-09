@@ -5,6 +5,10 @@ commit log.
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.1.0
+
 ### Changed
 
 - `mcpstrict`: Check's allocation is linear in the input. No shape grows
