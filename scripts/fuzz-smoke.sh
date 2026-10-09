@@ -36,15 +36,16 @@ count=0
 while IFS=$'\t' read -r dir name; do
 	[ -n "$name" ] || continue
 	echo "fuzz smoke: ./$dir $name for $FUZZTIME"
-	# -timeout bounds the seed phase only. It does not bound fuzzing;
-	# the outer timeout does.
+	# go test's -timeout is kept but bounds nothing here: with -run '^$'
+	# and -fuzz, the seeds and fuzzing both run after its alarm stops.
+	# The outer timeout is the bound.
 	rc=0
 	timeout --kill-after=30s "$FUZZTIMEOUT" "$GO" test "./$dir" \
 		-run '^$' -fuzz "^${name}\$" -fuzztime "$FUZZTIME" \
 		-fuzzminimizetime "$FUZZMINIMIZETIME" \
 		-timeout "$FUZZTIMEOUT" -count=1 || rc=$?
 	if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-		echo "fuzz smoke: ./$dir $name did not finish $FUZZTIME execs within $FUZZTIMEOUT" >&2
+		echo "fuzz smoke: ./$dir $name did not finish $FUZZTIME execs within $FUZZTIMEOUT (timed out or killed, rc=$rc)" >&2
 		exit 1
 	elif [ "$rc" -ne 0 ]; then
 		exit "$rc"
