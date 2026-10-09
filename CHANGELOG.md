@@ -10,7 +10,7 @@ commit log.
 - Repository setup: Apache-2.0 license, README with the consumer pin matrix
   and option ledger, SECURITY.md, CODEOWNERS, and CI (`go vet`,
   `go test -race ./...`, fuzz smoke, `govulncheck`, and a `replace`/`go.work`
-  check) on Go 1.26.8.
+  check) on Go 1.26.9.
 - `kerr`: error kinds a facade maps onto its own wire code.
 - `authn`: token loading, verifier, stdio pin, secret wiping, and reload.
 - `scope`: principal table and capability gate.
