@@ -8,17 +8,20 @@ commit log.
 ### Changed
 
 - `mcpstrict`: Check's allocation is linear in the input. No shape grows
-  faster than linearly. The 8× + 256 KiB bound is only deep and flat inputs
-  that are not wide objects (measured at most about 3.5×). A wide object is
-  about 20×, from the duplicate-key map and the decoded key strings.
-  A root Typed decode is about 43× for a flat array of numbers and about
-  31× for a wide object, the same `encoding/json` decode the MCP SDK pays.
-  A Typed `/*` walk over every element of a flat array is about 66× to 71×,
-  from per-element pattern slices on top of that decode, and is still
-  linear. `TestCheckAllocBound` pins the wide object at 28× + 256 KiB, the
-  root Typed decode at 60× + 256 KiB, and the Typed `/*` walk at 99× + 256
-  KiB, and fails if doubling the input multiplies allocations by more than
-  2.6×. Measured 2026-10-08 on Go 1.26.8.
+  faster than linearly. The 8× + 256 KiB bound covers three fixtures, each
+  at most about 3.5×: a nested array, a single-key deep object, and a flat
+  array of zeros. A wide object is about 20×, from the duplicate-key map
+  and the decoded key strings. A flat array of small two-key objects is
+  about 41×, because each object allocates that map, and is pinned at
+  58× + 256 KiB. A root Typed decode is about 43× for a flat array of
+  numbers and about 31× for a wide object, the same `encoding/json` decode
+  the MCP SDK pays. A Typed `/*` walk over every element of a flat array
+  is about 66× to 71× and is pinned at 99× + 256 KiB. The same walk over
+  a wide object's keys is about 34× and uses the 60× root-Typed limit.
+  The doubling check fails above 2.6×. The size matrix grew by at most
+  about 2.02×. The committed -race probe, 64 KiB to 128 KiB, grew 2.10×
+  for a root Typed decode and 2.06× for a flat Typed `/*` walk. Measured
+  2026-10-08 on Go 1.26.8; the two-key array on Go 1.26.9.
 - Option ledger: `authn.MinSecretBytes` follows the Q8 timeline. A dns
   PR outside B now generates tokens of at least 32 bytes. dns's next
   minor, outside B, refuses shorter tokens. B follows dns `main` at M6:

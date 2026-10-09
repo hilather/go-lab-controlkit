@@ -5,10 +5,12 @@
 // "{}" arguments are accepted. A non-JSON body never reaches Check.
 //
 // Check allocates linearly in the input size. No shape grows faster than
-// linearly. Deep and flat documents that are not wide objects stay within
-// about 8× the input plus 256 KiB. A wide object is about 20×, from the
-// duplicate-key map and the decoded key strings. Spec.Typed adds one
-// encoding/json decode. See Check.
+// linearly. A wide object is about 20× the input. A root Typed decode is
+// about 43×. A Typed "/*" walk is about 66× to 71× over a flat array of
+// numbers, and about 34× over a wide object. A flat array of small
+// two-key objects is about 41×. The 8× + 256 KiB bound covers only the
+// nested array, the single-key deep object, and the flat array of zeros
+// named on Check. See Check.
 package mcpstrict
 
 import (
@@ -72,15 +74,21 @@ type Spec struct {
 // per node.
 //
 // Allocation is linear in the input size. No shape grows faster than
-// linearly. Deep and flat inputs that are not wide objects stay within
-// about 8× the input plus 256 KiB. A wide object is about 20×, from the
-// duplicate-key map and one decoded string per key. When Typed is
-// non-empty, a root Typed decode is about 43× for a flat array of
-// numbers and about 31× for a wide object, the same encoding/json decode
-// the MCP SDK pays. A Typed "/*" walk over every element of a flat array
-// is about 66× without the race detector and about 71× with it, from
-// per-element pattern slices on top of that decode, and is still linear.
-// Measured 2026-10-08 on Go 1.26.8.
+// linearly. A wide object is about 20×, from the duplicate-key map and
+// one decoded string per key. When Typed is non-empty, a root Typed
+// decode is about 43× for a flat array of numbers and about 31× for a
+// wide object, the same encoding/json decode the MCP SDK pays. A Typed
+// "/*" walk over every element of a flat array is about 66× without the
+// race detector and about 71× with it, from per-element pattern slices
+// on top of that decode. The same walk over a wide object's keys is
+// about 33× without the race detector and about 34.5× with it. A flat
+// array of small two-key objects is about 41× with or without the race
+// detector: parseObject allocates the duplicate-key map on the second
+// key of every object. All of these stayed linear. The 8× + 256 KiB
+// bound covers three fixtures only, each at most about 3.5×: a nested
+// array, a single-key deep object, and a flat array of zeros.
+// Measured 2026-10-08 on Go 1.26.8. The two-key array was measured the
+// same day on Go 1.26.9.
 func Check(raw json.RawMessage, spec Spec) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
