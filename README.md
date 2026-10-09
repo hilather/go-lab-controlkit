@@ -135,6 +135,7 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
   -require-ci` as `-tag` and `-sha`. GitHub ignores a step's env override
   of `GITHUB_SHA`, `GITHUB_REF` and `GITHUB_REF_NAME`, and on
   `workflow_dispatch` those name the dispatching branch, not the tag.
+  `-tag` without `-sha` skips the SHA cross-check.
 - The gate matches the CI run of that tag push: workflow `ci.yml`, event
   `push`, `headSha` equal to the peeled commit
   (`git rev-parse refs/tags/<tag>^{commit}`), and `headBranch` equal to the
