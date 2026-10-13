@@ -95,6 +95,10 @@ Nothing yet.
 - `kittest`: conformance suites that take injected drivers.
 - Fuzz smoke parses Go source for `Fuzz` functions, including a signature
   split across lines, and fails if `FuzzAuthorization`, `FuzzOrigin`, or
-  `FuzzCheck` is missing.
+  `FuzzCheck` is missing. Each target runs 200000 execs
+  (`-fuzztime 200000x`), not a duration, because a duration can fail a
+  clean run with a bare `context deadline exceeded` (golang/go#75804).
+  Each target is bounded by an outer 5m timeout (go test's `-timeout`
+  does not cover fuzzing) with `-fuzzminimizetime 5s`.
 - `check-gomod` fails when any `go.mod` other than the root `./go.mod` is
   tracked or present.

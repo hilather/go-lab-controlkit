@@ -1,6 +1,8 @@
 GO ?= go
 GOVULNCHECK_MOD ?= golang.org/x/vuln/cmd/govulncheck@v1.1.4
-FUZZTIME ?= 10s
+FUZZTIME ?= 200000x
+FUZZMINIMIZETIME ?= 5s
+FUZZTIMEOUT ?= 5m
 
 .PHONY: help ci fmt-check vet build test test-race fuzz-smoke vulncheck check-gomod
 
@@ -12,7 +14,7 @@ help:
 		'  build        go build ./...' \
 		'  test         go test ./...' \
 		'  test-race    go test -race ./...' \
-		'  fuzz-smoke   every Fuzz target for FUZZTIME (default 10s)' \
+		'  fuzz-smoke   every Fuzz target for FUZZTIME execs (default 200000x)' \
 		'  vulncheck    govulncheck ./...' \
 		'  check-gomod  no replace, go.work, require, toolchain, or nested go.mod; go 1.26' \
 		'  ci           all of the above'
@@ -35,7 +37,7 @@ test-race:
 	$(GO) test -race ./...
 
 fuzz-smoke:
-	GO="$(GO)" FUZZTIME="$(FUZZTIME)" scripts/fuzz-smoke.sh
+	GO="$(GO)" FUZZTIME="$(FUZZTIME)" FUZZMINIMIZETIME="$(FUZZMINIMIZETIME)" FUZZTIMEOUT="$(FUZZTIMEOUT)" scripts/fuzz-smoke.sh
 
 vulncheck:
 	$(GO) run $(GOVULNCHECK_MOD) ./...
