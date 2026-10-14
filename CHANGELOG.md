@@ -5,7 +5,21 @@ commit log.
 
 ## Unreleased
 
-Nothing yet.
+### Fixed
+
+- Release docs: `docs/releases/v0.1.0.md` and the v0.1.0 changelog said
+  there is no GitHub Release; Helm published one by hand. The notes' tag
+  line no longer has the pre-tag text. No retag: the `v0.1.0` tag and the
+  GitHub Release body keep the old wording.
+- SECURITY.md: the support table names `v0.1.0` as the supported minor;
+  unreleased `main` is no longer supported (its best-effort window ended
+  at `v0.1.0`, as the old table said).
+- README: the status says `v0.1.0` is tagged and its GitHub Release was
+  published by hand; the release process says Helm may publish one by
+  hand. The option ledger names dns v1.6.0 as the release that refuses
+  tokens shorter than 32 bytes. The v0.1.0 notes ("dns's enforcing minor
+  release") and the v0.1.0 changelog ("dns's next minor", "dns's
+  enforcement minor") keep their wording on purpose: no retag.
 
 ## v0.1.0
 
@@ -53,7 +67,8 @@ Nothing yet.
   the tag name, newest run only. Required jobs are the CI job names. The
   tagged commit must contain `docs/releases/<tag>.md` (a Markdown heading
   that includes the tag; a fenced copy does not count) and a `## <tag>` line
-  in `CHANGELOG.md`. There is no image and no GitHub Release. `apidiff`
+  in `CHANGELOG.md`. The workflow publishes no image and no GitHub
+  Release (Helm may publish the GitHub Release by hand). `apidiff`
   stays a required check from `v1.0.0`, not in this workflow.
   `release.yml` passes the tag and its peeled commit to
   `release-gate -require-ci` as `-tag` and `-sha`, because GitHub ignores
