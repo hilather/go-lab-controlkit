@@ -23,8 +23,8 @@ tokens or token files.
 
 | Version | Supported |
 |---|---|
-| Latest `v0.x` minor (once tagged) | Yes |
-| Unreleased `main` | Best-effort until `v0.1.0` |
+| Latest `v0.x` minor (`v0.1.0`) | Yes |
+| Unreleased `main` | No (best-effort ended at `v0.1.0`) |
 | Older minors, forks or modified copies | No |
 
 ## How fixes ship

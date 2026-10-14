@@ -14,10 +14,10 @@ Module path: `github.com/hilather/go-lab-controlkit`
 
 ## Status
 
-The v0.1.0 packages have landed. Nothing is tagged. The release workflow
-gates a `v*` tag and does not publish an image, a binary, or a GitHub
-Release. The release-prep pull request adds `docs/releases/v0.1.0.md` and
-folds the changelog before Helm tags `v0.1.0`. Muse never tags.
+The v0.1.0 packages have landed and `v0.1.0` is tagged. The release
+workflow gates a `v*` tag and does not publish an image, a binary, or a
+GitHub Release; Helm published the v0.1.0 GitHub Release by hand. Muse
+never tags.
 
 ## Packages
 
@@ -73,7 +73,7 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 | `ratelimit` `MaxKeys` 0 `*` | uncapped in dns, ntp REST, snmp, maildev | accidental, security-relevant | Resolved: there is no such value in the kit (constructor error). P6 moves the uncapped limiters in PR-2. |
 | nil-verifier administrator `*` | maildev (REST, MCP, compat), dns | accidental, security-relevant | Resolved: the kit never offers it, and P5 deletes the facade copies in PR-2. |
 | `authn.FileOpts.Harden` = false `*` | all six, in PR-1 | transitional: keeps PR-1 zero-change (3.2) | Resolved: each consumer's C3a commit sets true, and the option is removed before v1.0.0 (M7). |
-| `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Decided by Matt (2026-10-08, Q8). Timeline: (1) now, a dns PR outside B makes the examples/main-lab README generate tokens of at least 32 bytes (its CHANGELOG line should also flag shorter tokens as deprecated, so operators get a release before the refusal); (2) dns's next minor release, outside B, refuses tokens shorter than 32 bytes, with the CHANGELOG deprecation note and a breaking call-out; (3) B follows dns `main` at M6: if (2) has landed, dns's facade sets `MinSecretBytes: 32` and P8 is omitted (its counter could never increment); only if M6 ships first does B keep P8's warning plus a kittest pin, and (2) then sets 32 in the facade. B never loosens what dns `main` enforces. |
+| `authn.MinSecretBytes` 0 `*` | dns | accidental, security-relevant | Decided by Matt (2026-10-08, Q8). Timeline: (1) now, a dns PR outside B makes the examples/main-lab README generate tokens of at least 32 bytes (its CHANGELOG line should also flag shorter tokens as deprecated, so operators get a release before the refusal); (2) dns v1.6.0, outside B, refuses tokens shorter than 32 bytes, with a breaking call-out (the deprecation note is in dns's Unreleased changelog, for v1.5.0); (3) B follows dns `main` at M6: if (2) has landed, dns's facade sets `MinSecretBytes: 32` and P8 is omitted (its counter could never increment); only if M6 ships first does B keep P8's warning plus a kittest pin, and (2) then sets 32 in the facade. B never loosens what dns `main` enforces. |
 | `authn.Duplicates` = FirstMatchWins `*` | dns | accidental | Owned by dns before v1.0.0: a kittest pin and a ledger entry. Converging would reject dns configs that boot today, which needs its own decision. |
 | `authn.Accept` (zero-token predicate) | ntp, netconf: refuse; snmp: refuse from its B PR-2 (P9); maildev, syslog: none | product (snmp converges in B) | Decided by Matt (2026-10-08, Q11/P9). snmp, ntp and netconf refuse a zero-token bearer config at boot (when management binds or a stdio pin is built, unchanged) and at reset through a control adapter (REST, MCP over HTTP, or stdio; C3a). A reset with no adapter attached, such as an app-level test, runs no predicate, as today. snmp's `TestReloadAuthDropsEmptyTokens` flips to a refusal. maildev and syslog are exempt and keep `Accept` unset. |
 | `FileOpts.Line`, `Resolve`, `SkipMissing`; `DNSBundle`; dns identity defaults | per repo | product (documented file formats and path rules) | Kept. |
@@ -127,7 +127,8 @@ the v0.1.0 layout (`capgate` is `scope.Gate`). Milestones (M), deltas
 - Pushing a `v*` tag runs CI (`.github/workflows/ci.yml`) and the release
   workflow (`.github/workflows/release.yml`). controlkit is a library, so the
   release workflow is a gate only. It does not publish an image, a binary, or
-  a GitHub Release. `workflow_dispatch` re-runs the gate for one tag and
+  a GitHub Release. Helm may publish a GitHub Release by hand, as for
+  v0.1.0. `workflow_dispatch` re-runs the gate for one tag and
   publishes nothing. Before checkout, the workflow trims that ref, strips one
   `refs/tags/` prefix, and requires the pattern above. Checkout receives only
   `refs/tags/<tag>`. A ref that fails the pattern is not checked out. The
