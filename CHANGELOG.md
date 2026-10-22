@@ -5,6 +5,10 @@ commit log.
 
 ## Unreleased
 
+### Changed
+
+- Go toolchain 1.26.9 → 1.26.10 (CI `GO_VERSION` in `.github/workflows/ci.yml` and `.github/workflows/release.yml`, and the README CI pin). `go.mod` stays `go 1.26` with no toolchain line. 1.26.9 lacks the crypto/x509 fix for GO-2026-6809.
+
 ### Fixed
 
 - Release docs: `docs/releases/v0.1.0.md` and the v0.1.0 changelog said
