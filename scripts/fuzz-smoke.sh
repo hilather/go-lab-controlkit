@@ -3,7 +3,7 @@
 # execs (default 200000x). CI runs this as the required "fuzz smoke" check.
 #
 # A duration -fuzztime can fail a clean run with a bare
-# "context deadline exceeded" (issue golang/go#75804, unfixed in go1.26.9;
+# "context deadline exceeded" (issue golang/go#75804, unfixed in go1.26.10;
 # fix golang/go#79199). A count sets no deadline. Go back to a duration
 # once the Go version CI pins carries that fix.
 #
