@@ -5,7 +5,9 @@ commit log.
 
 ## Unreleased
 
-Nothing yet.
+### Changed
+
+- Go toolchain 1.26.10 → 1.26.11 (CI `GO_VERSION` in `.github/workflows/ci.yml` and `.github/workflows/release.yml`, the README CI pin, and the `scripts/fuzz-smoke.sh` comment); go1.26.11 includes security fixes to cgo, the go command, the compiler, the linker and net/http.
 
 ## v0.1.1
 
